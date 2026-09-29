@@ -64,6 +64,37 @@ export function setRain(level: number) {
   rain.gain.gain.setTargetAtTime(muted ? 0 : level * 0.05, ctx.currentTime, 0.8);
 }
 
+let engine: { osc: OscillatorNode; sub: OscillatorNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
+
+/** Diesel drone for the machine you're driving. level 0 turns it off; rev 0..1 raises the pitch. */
+export function setEngine(level: number, rev: number) {
+  if (!ctx) return;
+  if (!engine) {
+    if (level <= 0) return;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    const sub = ctx.createOscillator();
+    sub.type = 'square';
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 320;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    osc.connect(filter);
+    sub.connect(filter);
+    filter.connect(gain).connect(ctx.destination);
+    osc.start();
+    sub.start();
+    engine = { osc, sub, gain, filter };
+  }
+  const t = ctx.currentTime;
+  const f = 38 + rev * 42;
+  engine.osc.frequency.setTargetAtTime(f, t, 0.25);
+  engine.sub.frequency.setTargetAtTime(f / 2, t, 0.25);
+  engine.filter.frequency.setTargetAtTime(260 + rev * 380, t, 0.25);
+  engine.gain.gain.setTargetAtTime(muted ? 0 : level * (0.035 + rev * 0.03), t, 0.2);
+}
+
 function thunder() {
   if (!ctx || muted) return;
   const buf = noise();

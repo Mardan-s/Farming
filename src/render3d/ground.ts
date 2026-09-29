@@ -69,6 +69,9 @@ export class Ground {
   private chunks: Chunk[] = [];
   private mats: THREE.MeshLambertMaterial[] = [];
   private wetness = -1;
+  private snow = 0;
+  private day = 1;
+  private outsideMat: THREE.MeshLambertMaterial;
   private cols = Math.ceil(MAP_W / CHUNK);
   private current = new Int16Array(MAP_W * MAP_H).fill(-1);
 
@@ -97,10 +100,8 @@ export class Ground {
       }
     }
     // Endless meadow beyond the map edge.
-    const outside = new THREE.Mesh(
-      new THREE.PlaneGeometry(900, 900),
-      new THREE.MeshLambertMaterial({ color: 0x5e9c42 }),
-    );
+    this.outsideMat = new THREE.MeshLambertMaterial({ color: 0x5e9c42 });
+    const outside = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), this.outsideMat);
     outside.rotation.x = -Math.PI / 2;
     outside.position.set(MAP_W / 2, -0.02, MAP_H / 2);
     outside.receiveShadow = true;
@@ -121,8 +122,26 @@ export class Ground {
     const q = Math.round(w * 50) / 50;
     if (q === this.wetness) return;
     this.wetness = q;
-    const shade = 1 - 0.3 * q;
-    for (const m of this.mats) m.color.setRGB(shade, shade, shade * 1.02);
+    this.applyTint();
+  }
+
+  /** Winter snow cover (0..1): whitens the ground, scaled by daylight so it doesn't glow at night. */
+  setSnow(snow: number, day: number) {
+    const s = Math.round(snow * 40) / 40, d = Math.round(day * 20) / 20;
+    if (s === this.snow && d === this.day) return;
+    this.snow = s;
+    this.day = d;
+    this.applyTint();
+    this.outsideMat.color.setHex(0x5e9c42).lerp(new THREE.Color(0xdfe6ee), s * 0.85);
+  }
+
+  private applyTint() {
+    const shade = (1 - 0.3 * Math.max(0, this.wetness)) * (1 - 0.55 * this.snow);
+    const e = this.snow * (0.12 + 0.5 * this.day);
+    for (const m of this.mats) {
+      m.color.setRGB(shade, shade, shade * 1.02);
+      m.emissive.setRGB(e * 0.93, e * 0.96, e);
+    }
   }
 
   /** Uploads changed chunks to the GPU; call once per frame. */

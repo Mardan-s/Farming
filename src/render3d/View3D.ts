@@ -3,26 +3,27 @@ import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { QUALITY, getQuality, isSafeMode, setSafeMode } from './quality';
 import {
   COMBINE_LEN, CROP_DEFS, ELEVATOR, HEADER_OFFSET, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS,
-  PARCEL_W, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, parcelPrice,
+  PARCEL_W, PUMP, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, parcelPrice,
   type Op, type ToolKind, type Weather,
 } from '../game/config';
 import { CellState, type Field } from '../game/field';
 import type { Pt } from '../game/geometry';
 import { isHarvester, type Game, type Vehicle } from '../game/sim';
-import { setRain, sfx } from '../audio';
+import { setEngine, setRain, sfx } from '../audio';
 import { PARCEL_COUNT, inRect, parcelRect } from '../game/world';
 import { Crops } from './crops';
 import { Ground } from './ground';
 import { T, buildTiles } from './groundTiles';
 import { disposeSprite, tagSprite, textSprite } from './labels';
 import {
-  buildCombine, buildElevator, buildFarmhouse, buildRootHarvester, buildShed, buildSilo, buildTool, buildTractor, buildTrees, setHeader,
+  box, buildCombine, buildElevator, buildFarmhouse, buildRootHarvester, buildShed, buildSilo, buildTool, buildTractor, buildTrees, setHeader,
   type ToolModel, type VehicleModel,
 } from './models';
 import { Particles } from './particles';
 import type { TapInfo, ViewControls, ViewHost } from './types';
 
 const PITCH = THREE.MathUtils.degToRad(55);
+const CHASE_PITCH = THREE.MathUtils.degToRad(24);
 const RAIN_DROPS = 1500;
 const CLOUD: Record<Weather, number> = { sun: 0, cloudy: 0.55, rain: 0.8, storm: 1 };
 const RAIN: Record<Weather, number> = { sun: 0, cloudy: 0, rain: 0.6, storm: 1 };
@@ -70,6 +71,13 @@ export class View3D implements ViewControls {
   private target = new THREE.Vector3(17, 0, 51);
   private dist = 30;
   private yaw = 0;
+  private pitch = PITCH;
+  private chaseDist = 13;
+  private wasDriving = false;
+  private snow = 0;
+  private hillMats: THREE.MeshLambertMaterial[] = [];
+  private snowTint = -1;
+  private readonly snowColor = new THREE.Color(0xe4eaf0);
   private sun = new THREE.DirectionalLight(0xffffff, 2.6);
   private hemi = new THREE.HemisphereLight(0xb8d4ff, 0x4a5a3a, 1.1);
   private q = QUALITY[getQuality()];
@@ -263,7 +271,7 @@ export class View3D implements ViewControls {
   }
 
   private paintFieldCell(f: Field, i: number) {
-    const stage = f.stage(i, this.sim.clock);
+    const stage = f.stage(i, this.sim.growth);
     const cache = this.stageCache.get(f.id);
     if (cache) cache[i] = f.state[i] === CellState.Seeded ? stage : -1 - f.state[i];
     const c = f.cells[i];
@@ -273,7 +281,7 @@ export class View3D implements ViewControls {
 
   /** Short field label: number plus icons for what the field needs. */
   private fieldMarks(f: Field) {
-    const s = f.summary(this.sim.clock);
+    const s = f.summary(this.sim.growth);
     const marks: string[] = [];
     if (s.ready) marks.push('#c9961e'); // ripe
     if (s.weedy > s.total * 0.05) marks.push('#8a4a9a'); // weeds
@@ -295,7 +303,7 @@ export class View3D implements ViewControls {
       if (!cache) continue;
       for (let i = 0; i < f.cells.length; i++) {
         if (f.state[i] !== CellState.Seeded) continue;
-        if (cache[i] !== f.stage(i, this.sim.clock)) this.paintFieldCell(f, i);
+        if (cache[i] !== f.stage(i, this.sim.growth)) this.paintFieldCell(f, i);
       }
     }
   }
@@ -353,7 +361,10 @@ export class View3D implements ViewControls {
       const rx = MAP_W * 0.75 + rnd() * 40, rz = MAP_H * 0.9 + rnd() * 40;
       const r = 22 + rnd() * 28;
       const color = new THREE.Color().setHSL(0.26 + rnd() * 0.06, 0.38, 0.28 + rnd() * 0.1);
-      const hill = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color, flatShading: true }));
+      const hillMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
+      hillMat.userData.base = new THREE.Color(color);
+      this.hillMats.push(hillMat);
+      const hill = new THREE.Mesh(geo, hillMat);
       hill.position.set(cx + Math.cos(a) * rx, -r * 0.55, cz + Math.sin(a) * rz);
       hill.scale.set(r, r * (0.55 + rnd() * 0.35), r * (0.8 + rnd() * 0.4));
       hill.receiveShadow = true;
@@ -374,7 +385,15 @@ export class View3D implements ViewControls {
     const elev = buildElevator(ELEVATOR.w, ELEVATOR.h);
     elev.position.set(ELEVATOR.x + ELEVATOR.w / 2, 0, ELEVATOR.y + ELEVATOR.h / 2);
     elev.userData.pick = 'elevator';
-    this.scene.add(silo, shed, house, elev);
+    // Diesel pump beside the silo.
+    const pump = new THREE.Group();
+    box(pump, 0.5, 1.1, 0.4, 0xc8392b, 0, 0.55, 0);
+    box(pump, 0.54, 0.22, 0.44, 0xf2efe6, 0, 1.0, 0);
+    box(pump, 0.08, 0.5, 0.08, 0x2b2b2b, 0.3, 0.6, 0);
+    box(pump, 1.3, 0.08, 1.1, 0x9a9a92, 0, 0.04, 0);
+    pump.position.set(PUMP.x, 0, PUMP.y);
+    pump.traverse(o => { o.castShadow = true; });
+    this.scene.add(silo, shed, house, elev, pump);
     this.pickables.push(silo, elev);
 
     // Fence around the farmyard.
@@ -550,11 +569,12 @@ export class View3D implements ViewControls {
   private updateCamera() {
     this.target.x = THREE.MathUtils.clamp(this.target.x, 0, MAP_W);
     this.target.z = THREE.MathUtils.clamp(this.target.z, 0, MAP_H);
-    const d = this.dist;
+    const d = this.sim.drivenId != null ? this.chaseDist : this.dist;
+    const p = this.pitch;
     this.camera.position.set(
-      this.target.x + Math.sin(this.yaw) * Math.cos(PITCH) * d,
-      Math.sin(PITCH) * d,
-      this.target.z + Math.cos(this.yaw) * Math.cos(PITCH) * d,
+      this.target.x + Math.sin(this.yaw) * Math.cos(p) * d,
+      Math.sin(p) * d,
+      this.target.z + Math.cos(this.yaw) * Math.cos(p) * d,
     );
     this.camera.lookAt(this.target);
     const fog = this.scene.fog as THREE.Fog;
@@ -562,7 +582,10 @@ export class View3D implements ViewControls {
     fog.far = d * 4.5;
   }
 
-  zoomBy(f: number) { this.dist = THREE.MathUtils.clamp(this.dist / f, 7, 110); }
+  zoomBy(f: number) {
+    if (this.sim.drivenId != null) this.chaseDist = THREE.MathUtils.clamp(this.chaseDist / f, 6, 30);
+    else this.dist = THREE.MathUtils.clamp(this.dist / f, 7, 110);
+  }
   rotateBy(r: number) { this.yaw += r; }
   centerOnCells(x: number, y: number) { this.target.set(x, 0, y); }
 
@@ -603,6 +626,10 @@ export class View3D implements ViewControls {
         const [a, b] = [...this.pointers.values()];
         const d = Math.hypot(b.x - a.x, b.y - a.y);
         const ang = Math.atan2(b.y - a.y, b.x - a.x);
+        if (this.sim.drivenId != null) {
+          this.zoomBy(this.pinch.d / d > 1 ? 0.98 : 1.02);
+          return;
+        }
         this.dist = THREE.MathUtils.clamp(this.pinch.dist * (this.pinch.d / d), 7, 110);
         this.yaw = this.pinch.yaw + (ang - this.pinch.a);
         this.updateCamera();
@@ -613,7 +640,7 @@ export class View3D implements ViewControls {
       const dr = this.drag;
       if (dr && dr.id === e.pointerId) {
         if (!dr.moved && Math.hypot(cur.x - dr.sx, cur.y - dr.sy) > 8) dr.moved = true;
-        if (dr.moved) this.panBy(prev, cur);
+        if (dr.moved && this.sim.drivenId == null) this.panBy(prev, cur);
       }
       this.pointers.set(e.pointerId, cur);
     });
@@ -627,7 +654,7 @@ export class View3D implements ViewControls {
       }
       const dr = this.drag;
       this.drag = null;
-      if (dr && dr.id === e.pointerId && !dr.moved) this.handleTap(e.clientX, e.clientY);
+      if (dr && dr.id === e.pointerId && !dr.moved && this.sim.drivenId == null) this.handleTap(e.clientX, e.clientY);
     };
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
@@ -693,7 +720,27 @@ export class View3D implements ViewControls {
     this.flushT += dt;
     if (this.flushT > 0.06) { this.flushT = 0; this.ground.flush(); }
     if (this.lastSel !== this.host.selectedField) this.redrawFields();
-    if (this.host.follow && this.host.selectedVehicle != null) {
+    const driven = this.sim.driven;
+    if (driven) {
+      // Chase camera: low behind the machine, looking a little ahead of it.
+      const k = Math.min(1, dt * 4);
+      const fx = Math.cos(driven.heading), fz = Math.sin(driven.heading);
+      const look = 2.5 + Math.max(0, driven.speed) * 0.6;
+      this.target.x += (driven.x + fx * look - this.target.x) * k;
+      this.target.z += (driven.y + fz * look - this.target.z) * k;
+      const want = Math.atan2(-fx, -fz);
+      let dy = want - this.yaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      this.yaw += dy * Math.min(1, dt * (this.wasDriving ? 2.5 : 6));
+      this.pitch += (CHASE_PITCH - this.pitch) * Math.min(1, dt * 3);
+      this.wasDriving = true;
+    } else {
+      if (this.wasDriving) { this.wasDriving = false; this.dist = Math.max(this.dist, 22); }
+      this.pitch += (PITCH - this.pitch) * Math.min(1, dt * 3);
+    }
+    this.updateEngine(driven);
+    this.parcelGroup.visible = !driven;
+    if (!driven && this.host.follow && this.host.selectedVehicle != null) {
       const v = this.sim.vehicle(this.host.selectedVehicle);
       if (v) {
         const k = Math.min(1, dt * 3);
@@ -714,6 +761,16 @@ export class View3D implements ViewControls {
     this.particles.update(dt);
     this.renderer.render(this.scene, this.camera);
     this.host.frame(dt);
+  }
+
+  private engineT = 0;
+  private updateEngine(v: Vehicle | undefined) {
+    this.engineT += 1 / 60;
+    if (this.engineT < 0.1) return;
+    this.engineT = 0;
+    if (!v) { setEngine(0, 0); return; }
+    const load = v.working ? 1 : 0;
+    setEngine(1, Math.min(1, Math.abs(v.speed) / 4) * 0.7 + load * 0.3);
   }
 
   private updateLighting() {
@@ -762,6 +819,12 @@ export class View3D implements ViewControls {
       cam.near = 1; cam.far = 140;
       cam.updateProjectionMatrix();
     }
+    this.ground.setSnow(this.snow, day);
+    const st = Math.round(this.snow * 30);
+    if (st !== this.snowTint) {
+      this.snowTint = st;
+      for (const m of this.hillMats) m.color.copy(m.userData.base).lerp(this.snowColor, this.snow * 0.8);
+    }
     const night = 1 - day;
     for (const v of this.vViews.values()) v.model.lights.emissiveIntensity = night > 0.5 ? 2.5 : 0;
   }
@@ -802,18 +865,26 @@ export class View3D implements ViewControls {
     const w = this.sim.weather;
     this.cloud += (CLOUD[w] - this.cloud) * Math.min(1, dt * 0.35);
     this.rainLevel += (RAIN[w] - this.rainLevel) * Math.min(1, dt * 0.5);
-    this.wet = THREE.MathUtils.clamp(this.wet + (this.rainLevel > 0.2 ? dt * 0.06 : -dt * 0.015), 0, 1);
-    this.ground.setWetness(this.wet);
+    this.wet += (this.sim.wetness - this.wet) * Math.min(1, dt * 2);
+    const winter = this.sim.season === 'winter';
+    this.snow += ((winter ? 1 : 0) - this.snow) * Math.min(1, dt * 0.6);
+    this.ground.setWetness(winter ? 0 : this.wet);
+    const flakes = this.snow > 0.5;
+    const rm = this.rain.material as THREE.LineBasicMaterial;
+    rm.color.setHex(flakes ? 0xffffff : 0xb8cbe0);
+    rm.opacity = flakes ? 0.9 : 0.55;
     const active = Math.floor(RAIN_DROPS * this.rainLevel);
     const p = this.rainPos;
-    const fall = 24 * dt;
+    const fall = (flakes ? 3.5 : 24) * dt;
     for (let i = 0; i < active; i++) {
       const k = i * 6;
       p[k + 1] -= fall; p[k + 4] -= fall;
-      p[k] -= fall * 0.15; p[k + 3] -= fall * 0.15;
+      const drift = flakes ? Math.sin(this.time * 1.3 + i) * 0.6 * dt : fall * 0.15;
+      p[k] -= drift; p[k + 3] -= drift;
+      if (flakes) { p[k + 3] = p[k] + 0.09; p[k + 4] = p[k + 1] - 0.09; p[k + 5] = p[k + 2] + 0.05; }
       const far = Math.abs(p[k] - this.target.x) > 32 || Math.abs(p[k + 2] - this.target.z) > 32;
       if (p[k + 4] < 0 || far) {
-        if (p[k + 4] < 0 && Math.random() < 0.3) {
+        if (!flakes && p[k + 4] < 0 && Math.random() < 0.3) {
           this.particles.emit(p[k + 3], 0.05, p[k + 5], 0, 0.6, 0, { color: 0xcfe0f0, life: 0.25, size: [0.05, 0.12], alpha: 0.6, gravity: 4 });
         }
         this.respawnDrop(i, 16 + Math.random() * 6);
@@ -823,7 +894,7 @@ export class View3D implements ViewControls {
     this.rain.geometry.getAttribute('position').needsUpdate = true;
     // Lightning during storms.
     this.nextBolt -= dt;
-    if (w === 'storm' && this.nextBolt <= 0) {
+    if (w === 'storm' && !flakes && this.nextBolt <= 0) {
       this.flash = 1;
       this.nextBolt = 5 + Math.random() * 9;
       setTimeout(() => sfx.thunder(), 500 + Math.random() * 1200);
@@ -831,7 +902,7 @@ export class View3D implements ViewControls {
     this.flash = Math.max(0, this.flash - dt * 3.5);
     if (this.flash > 0.3 && this.flash < 0.5) this.flash = 0.2 + Math.random() * 0.6; // flicker
     this.rainAudioT += dt;
-    if (this.rainAudioT > 0.5) { this.rainAudioT = 0; setRain(this.rainLevel); }
+    if (this.rainAudioT > 0.5) { this.rainAudioT = 0; setRain(flakes ? 0 : this.rainLevel); }
   }
 
   private syncTools() {
@@ -840,7 +911,7 @@ export class View3D implements ViewControls {
     }
     for (const t of this.sim.tools) {
       const holder = t.attachedTo != null ? this.sim.vehicle(t.attachedTo) : undefined;
-      const working = holder?.steps[0]?.t === 'work';
+      const working = holder ? this.sim.toolWorking(t) : false;
       const full = t.kind === 'wagon' || t.kind === 'spreader' ? 1 : this.sim.toolWidth(t.kind);
       const width = working ? full : Math.min(full, FOLDED[t.kind] ?? full);
       let view = this.tViews.get(t.id);

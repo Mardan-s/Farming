@@ -1,11 +1,12 @@
 import {
-  CROPS, CROP_DEFS, OP_DEFS, SHOP_ITEMS, SILO_CAP, SPEEDS, UPGRADES, WEATHER_DEFS, parcelPrice,
+  CROPS, CROP_DEFS, FUEL_CAP, LOAN_DAILY_RATE, LOAN_MAX, LOAN_STEP, OP_DEFS, SEASON_NAMES, SHOP_ITEMS, SILO_CAP, SPEEDS,
+  UPGRADES, WAGE_PER_SEC, WEATHER_DEFS, parcelPrice,
   type CropId, type UpgradeId,
 } from '../game/config';
 import type { Field } from '../game/field';
 import type { Pt } from '../game/geometry';
 import { GOALS } from '../game/goals';
-import { TOOL_NAMES, VEHICLE_NAMES, isHarvester, type Game, type Need, type Op, type Vehicle } from '../game/sim';
+import { TOOL_NAMES, VEHICLE_NAMES, isHarvester, plantWindow, type Game, type Ledger, type Need, type Op, type Vehicle } from '../game/sim';
 import { parcelRect } from '../game/world';
 import { setMuted, sfx } from '../audio';
 import { getQuality, isSafeMode, setQuality, setSafeMode, type Quality } from '../render3d/quality';
@@ -25,7 +26,7 @@ type Panel =
   | { kind: 'parcel'; index: number }
   | { kind: 'silo' };
 
-type Modal = null | 'shop' | 'market' | 'fleet' | 'settings' | 'welcome' | 'confirm';
+type Modal = null | 'shop' | 'market' | 'fleet' | 'settings' | 'welcome' | 'confirm' | 'finance';
 
 const $ = (sel: string) => document.querySelector(sel) as HTMLElement;
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
@@ -60,6 +61,10 @@ export class UI implements ViewHost {
   private live = new Map<string, () => string>();
   private view!: ViewControls;
   private pending: { msg: string; yes: string; run: () => void } | null = null;
+  private driveKey = '';
+  private stick = { id: -1, cx: 0, cy: 0, steer: 0 };
+  private pedal = { gas: new Set<number>(), brake: new Set<number>() };
+  private keys = new Set<string>();
 
   constructor(private sim: Game, private onSave: () => void, private onReset: () => void) {
     this.goalOpen = sim.goalIdx < 3; // helper text only while learning
@@ -72,6 +77,16 @@ export class UI implements ViewHost {
       setTimeout(() => $('#goal').classList.remove('pop'), 700);
     });
     sim.events.on('money', (_x: number, _y: number, amt: number) => { if (amt > 0) sfx.cash(); });
+    sim.events.on('drive', () => this.syncDriving());
+    sim.events.on('season', (season: string) => {
+      const msg: Record<string, string> = {
+        spring: 'Spring is here. Plant wheat, barley, oats, corn, soybeans, sunflowers, potatoes or beets.',
+        summer: 'Summer. Corn, soybeans, oats and sunflowers can still go in.',
+        autumn: 'Autumn. Sow wheat, barley and canola now; they wait out the winter.',
+        winter: 'Winter. Nothing grows until spring. Plow, lime and sell from the silo.',
+      };
+      this.toast(msg[season] ?? season, 'info', season === 'winter' ? 'snow' : 'sun');
+    });
     setMuted(sim.muted);
   }
 
@@ -94,7 +109,7 @@ export class UI implements ViewHost {
     document.getElementById('ui')!.innerHTML = `
       <header id="top">
         <div class="strip">
-          <span class="cell money">${icon('coin')}<span id="money" class="fig"></span></span>
+          <button class="cell money" data-act="modal" data-arg="finance" aria-label="Finances">${icon('coin')}<span id="money" class="fig"></span></button>
           <button class="cell clock" data-act="forecast" aria-label="Weather forecast"><span id="wx"></span><span id="clock" class="fig"></span></button>
           <button class="cell speed" data-act="speed" aria-label="Game speed">${icon('speed')}<span id="speed" class="fig"></span></button>
           <button class="cell gear" data-act="modal" data-arg="settings" aria-label="Settings">${icon('settings')}</button>
@@ -108,6 +123,20 @@ export class UI implements ViewHost {
         <button data-act="home" aria-label="Go to farmyard">${icon('home')}</button>
       </div>
       <div id="toasts"></div>
+      <div id="drive" class="hidden">
+        <div class="dr-gauges">
+          <span class="dr-g"><b class="fig" data-live="dspeed"></b><small>km/h</small></span>
+          <span class="dr-g wide">${icon('fuel')}<span class="gauge-bar"><span data-live="dfuel" data-bar></span></span></span>
+          <span class="dr-g wide" id="dr-cargo">${icon('wagon')}<span class="gauge-bar"><span data-live="dcargo" data-bar></span></span></span>
+        </div>
+        <p class="dr-status" data-live="dstatus"></p>
+        <div class="dr-actions" id="dr-actions"></div>
+        <div class="stick" id="stick" aria-label="Steering"><span class="stick-knob"></span></div>
+        <div class="pedals">
+          <button class="pedal brake" id="brake" aria-label="Brake and reverse">${icon('brake')}<small>Brake</small></button>
+          <button class="pedal gas" id="gas" aria-label="Gas">${icon('gas')}<small>Gas</small></button>
+        </div>
+      </div>
       <div id="panel"></div>
       <div id="modal" class="hidden"></div>`;
     const root = document.getElementById('ui')!;
@@ -116,18 +145,23 @@ export class UI implements ViewHost {
       if (!el || el.hasAttribute('disabled')) return;
       this.act(el.dataset.act!, el.dataset.arg ?? '');
     });
-    this.live.set('money', () => money(this.sim.money).slice(1));
+    this.live.set('money', () => (this.sim.money < 0 ? '-' : '') + money(Math.abs(this.sim.money)).slice(1));
     this.live.set('clock', () => {
       const t = this.sim.timeOfDay;
-      return `Day ${this.sim.day} · ${pad2(Math.floor(t / 60))}:${pad2(Math.floor(t % 60))}`;
+      return `${this.sim.seasonName} ${this.sim.seasonDay} · ${pad2(Math.floor(t / 60))}:${pad2(Math.floor(t % 60))}`;
     });
+    this.live.set('dspeed', () => String(Math.round(Math.abs(this.sim.driven?.speed ?? 0) * 7)));
+    this.live.set('dfuel', () => { const v = this.sim.driven; return v ? String((v.fuel / FUEL_CAP[v.kind]) * 100) : '0'; });
+    this.live.set('dcargo', () => { const v = this.sim.driven; const c = v && this.sim.cargoOf(v); return c ? String((c.cargo.amount / c.cap) * 100) : '0'; });
+    this.live.set('dstatus', () => stripEmoji(this.sim.driven?.status ?? ''));
+    this.setupDriveControls();
     this.live.set('speed', () => `${SPEEDS[this.sim.speedIdx]}×`);
   }
 
   // ---------- ViewHost ----------
 
   onTap(info: TapInfo) {
-    if (this.modal) return;
+    if (this.modal || this.sim.drivenId != null) return;
     if (this.drawMode) { this.addCorner(info.cx, info.cy); return; }
     const selV = this.selectedVehicle != null ? this.sim.vehicle(this.selectedVehicle) : undefined;
 
@@ -171,7 +205,105 @@ export class UI implements ViewHost {
     this.liveT += dt;
     this.renderT += dt;
     if (this.renderT > 0.4) { this.renderT = 0; this.render(); }
-    if (this.liveT > 0.15) { this.liveT = 0; this.updateLive(); }
+    if (this.liveT > 0.15) { this.liveT = 0; this.updateLive(); this.renderDriveActions(); }
+    if (this.sim.drivenId != null) this.applyDriveInput();
+  }
+
+  // ---------- driving ----------
+
+  private setupDriveControls() {
+    const stick = $('#stick');
+    const knob = stick.querySelector('.stick-knob') as HTMLElement;
+    const moveKnob = (dx: number) => { knob.style.transform = `translateX(${dx}px)`; };
+    stick.addEventListener('pointerdown', e => {
+      stick.setPointerCapture(e.pointerId);
+      const r = stick.getBoundingClientRect();
+      this.stick = { id: e.pointerId, cx: r.left + r.width / 2, cy: r.top + r.height / 2, steer: 0 };
+      stick.classList.add('on');
+      e.preventDefault();
+    });
+    stick.addEventListener('pointermove', e => {
+      if (e.pointerId !== this.stick.id) return;
+      const r = stick.getBoundingClientRect().width / 2 - 20;
+      const dx = Math.max(-r, Math.min(r, e.clientX - this.stick.cx));
+      this.stick.steer = dx / r;
+      moveKnob(dx);
+    });
+    const release = (e: PointerEvent) => {
+      if (e.pointerId !== this.stick.id) return;
+      this.stick = { id: -1, cx: 0, cy: 0, steer: 0 };
+      moveKnob(0);
+      stick.classList.remove('on');
+    };
+    stick.addEventListener('pointerup', release);
+    stick.addEventListener('pointercancel', release);
+    for (const name of ['gas', 'brake'] as const) {
+      const el = document.getElementById(name)!;
+      const set = this.pedal[name];
+      el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); set.add(e.pointerId); el.classList.add('on'); e.preventDefault(); });
+      const up = (e: PointerEvent) => { set.delete(e.pointerId); if (!set.size) el.classList.remove('on'); };
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+      el.addEventListener('lostpointercapture', up);
+    }
+    // Keyboard driving on PC: WASD or arrows, E for the implement, Esc to leave.
+    window.addEventListener('keydown', e => {
+      if (this.sim.drivenId == null) return;
+      this.keys.add(e.key.toLowerCase());
+      if (e.key === 'e' || e.key === 'E') this.act('implement', '');
+      if (e.key === 'Escape') this.act('exitDrive', '');
+    });
+    window.addEventListener('keyup', e => this.keys.delete(e.key.toLowerCase()));
+  }
+
+  private applyDriveInput() {
+    const k = this.keys;
+    let steer = this.stick.steer;
+    if (k.has('a') || k.has('arrowleft')) steer = -1;
+    if (k.has('d') || k.has('arrowright')) steer = 1;
+    let throttle = 0;
+    if (this.pedal.gas.size || k.has('w') || k.has('arrowup')) throttle = 1;
+    if (this.pedal.brake.size || k.has('s') || k.has('arrowdown')) throttle = -1;
+    this.sim.setDriveInput(steer, throttle);
+  }
+
+  private syncDriving() {
+    const on = this.sim.drivenId != null;
+    document.body.classList.toggle('driving', on);
+    $('#drive').classList.toggle('hidden', !on);
+    this.driveKey = '';
+    if (on) {
+      this.selectedVehicle = null;
+      this.selectedField = null;
+      this.follow = false;
+      this.panel = { kind: 'home' };
+      this.modal = null;
+    }
+    this.render(true);
+  }
+
+  private renderDriveActions() {
+    const sim = this.sim;
+    const ctx = sim.driveContext();
+    const v = sim.driven;
+    if (!ctx || !v) return;
+    const cargo = sim.cargoOf(v);
+    const key = JSON.stringify([ctx, sim.driveCrop, sim.driveSpread, !!cargo, sim.money >= sim.repairCost(v)]);
+    if (key === this.driveKey) return;
+    this.driveKey = key;
+    $('#dr-cargo').style.display = cargo ? '' : 'none';
+    const b = (act: string, ico: string, label: string, cls = '') => `<button class="${cls}" data-act="${act}">${icon(ico)}<span>${label}</span></button>`;
+    const out: string[] = [];
+    if (ctx.op) {
+      out.push(b('implement', ctx.lowered ? 'raise' : 'lower', ctx.lowered ? `Raise ${isHarvester(v) ? 'header' : 'tool'}` : ctx.opLabel, ctx.lowered ? 'on' : 'primary'));
+      if (ctx.op === 'seed') out.push(b('driveCrop', CROP_ICON[sim.driveCrop], CROP_DEFS[sim.driveCrop].name));
+      if (ctx.op === 'fertilize' || ctx.op === 'lime') out.push(b('driveSpread', ctx.op, ctx.op === 'fertilize' ? 'Fertilizer' : 'Lime'));
+    }
+    if (ctx.unload) out.push(b('dUnload', 'unload', ctx.unload === 'sell' ? 'Sell load' : 'Into silo', 'primary'));
+    if (ctx.refuel) out.push(b('dRefuel', 'fuel', 'Refuel', 'primary'));
+    if (ctx.hitch) out.push(b('dHitch', 'unhitch', ctx.hitch === 'hitch' ? `Hitch ${ctx.hitchName}` : `Drop ${ctx.hitchName}`));
+    out.push(b('exitDrive', 'exit', 'Get out'));
+    $('#dr-actions').innerHTML = out.join('');
   }
 
   // ---------- selection & actions ----------
@@ -210,8 +342,10 @@ export class UI implements ViewHost {
       case 'rotate': this.view.rotateBy(parseFloat(arg)); sfx.tap(); break;
       case 'forecast': {
         const hours = Math.max(1, Math.round((sim.weatherChangeAt - sim.clock) / 60));
-        const now = WEATHER_DEFS[sim.weather], next = WEATHER_DEFS[sim.weatherNext];
-        this.toast(`${now.name} now. ${next.name} in about ${hours} h.`, 'info', WEATHER_ICON[sim.weatherNext]);
+        const winter = sim.season === 'winter';
+        const name = (w: typeof sim.weather) => winter && (w === 'rain' || w === 'storm') ? (w === 'rain' ? 'Snow' : 'Blizzard') : WEATHER_DEFS[w].name;
+        const wet = sim.tooWet ? ' Crops are too wet to harvest.' : sim.wetness > 0.05 ? ' Crops are drying.' : '';
+        this.toast(`${name(sim.weather)} now. ${name(sim.weatherNext)} in about ${hours} h.${wet}`, 'info', WEATHER_ICON[sim.weatherNext]);
         sfx.tap();
         return;
       }
@@ -299,6 +433,54 @@ export class UI implements ViewHost {
         if (p.kind === 'combineTarget') { sfx.select(); this.selectVehicle(p.cid); }
         return;
       }
+      case 'drive': {
+        if (this.selectedVehicle == null) return;
+        const err = sim.startDriving(this.selectedVehicle);
+        if (err) { sfx.error(); this.toast(err, 'bad'); return; }
+        sfx.select();
+        if (!sim.stats.drivenCells) this.toast('Left stick steers, right pedals drive. Lower the tool to work as you go.', 'info', 'wheel');
+        return;
+      }
+      case 'exitDrive': sfx.tap(); sim.stopDriving(); return;
+      case 'implement': {
+        const err = sim.toggleImplement();
+        if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.tap();
+        this.driveKey = '';
+        return;
+      }
+      case 'driveCrop': {
+        const v = sim.driven;
+        const root = v && sim.toolOf(v)?.kind === 'planter';
+        const list = CROPS.filter(c => !!CROP_DEFS[c].root === !!root);
+        const next = list[(list.indexOf(sim.driveCrop) + 1) % list.length];
+        sim.driveCrop = next;
+        if (!sim.canPlant(next)) this.toast(`${CROP_DEFS[next].name} is planted in ${plantWindow(next)}.`, 'info', CROP_ICON[next]);
+        if (sim.implDown) { sim.implDown = false; }
+        sfx.tap();
+        return;
+      }
+      case 'driveSpread': sim.driveSpread = sim.driveSpread === 'fertilize' ? 'lime' : 'fertilize'; sim.implDown = false; sfx.tap(); return;
+      case 'dHitch': { const err = sim.driverHitch(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.confirm(); return; }
+      case 'dUnload': { const err = sim.driverUnload(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.confirm(); return; }
+      case 'dRefuel': { const err = sim.driverRefuel(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.confirm(); return; }
+      case 'repair': {
+        const v = this.selectedVehicle != null ? sim.vehicle(this.selectedVehicle) : undefined;
+        if (!v) return;
+        const cost = sim.repairCost(v);
+        const err = sim.repair(v.id);
+        if (err) { sfx.error(); this.toast(err, 'bad'); return; }
+        sfx.buy();
+        this.toast(`${v.name} repaired for ${money(cost)}.`, 'good', 'wrench');
+        break;
+      }
+      case 'refuel': {
+        if (this.selectedVehicle == null) return;
+        const err = sim.orderRefuel(this.selectedVehicle);
+        if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.confirm();
+        break;
+      }
+      case 'borrow': { const err = sim.borrow(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.cash(); break; }
+      case 'repay': { const err = sim.repay(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.tap(); break; }
       case 'follow': this.follow = !this.follow; sfx.tap(); break;
       case 'park': if (this.selectedVehicle != null) { sim.orderPark(this.selectedVehicle); sfx.tap(); } break;
       case 'deliver': {
@@ -451,7 +633,7 @@ export class UI implements ViewHost {
   // ---------- rendering ----------
 
   private render(force = false) {
-    const panelHtml = this.renderPanel();
+    const panelHtml = this.sim.drivenId != null ? '' : this.renderPanel();
     if (force || panelHtml !== this.panelHtml) {
       if (panelHtml !== this.panelHtml) $('#panel').innerHTML = panelHtml;
       this.panelHtml = panelHtml;
@@ -488,7 +670,10 @@ export class UI implements ViewHost {
       if (el && el.textContent !== val) el.textContent = val;
     }
     const h = this.sim.timeOfDay / 60;
-    const wx = this.sim.weather === 'sun' && (h < 6 || h >= 19) ? 'moon' : WEATHER_ICON[this.sim.weather];
+    const w = this.sim.weather;
+    const wx = this.sim.season === 'winter' && (w === 'rain' || w === 'storm') ? 'snow'
+      : w === 'sun' && (h < 6 || h >= 19) ? 'moon' : WEATHER_ICON[w];
+    $('#top .money').classList.toggle('neg', this.sim.money < 0);
     if (wx !== this.wxKey) { this.wxKey = wx; $('#wx').innerHTML = icon(wx); }
   }
 
@@ -497,7 +682,7 @@ export class UI implements ViewHost {
     const [k, idStr] = key.split(':');
     const id = parseInt(idStr, 10);
     const sim = this.sim;
-    const summary = () => sim.world.fields.get(id)?.summary(sim.clock);
+    const summary = () => sim.world.fields.get(id)?.summary(sim.growth);
     switch (k) {
       case 'vstatus': return () => stripEmoji(sim.vehicle(id)?.status ?? '');
       case 'vcargo': return () => {
@@ -516,6 +701,8 @@ export class UI implements ViewHost {
       case 'flime': return () => { const s = summary(); return s && s.needLime ? `${Math.round((s.needLime / s.total) * 100)}% sour` : 'OK'; };
       case 'fweeds': return () => { const s = summary(); return s && s.weedy ? `${Math.round((s.weedy / s.total) * 100)}%` : 'None'; };
       case 'silo': return () => liters(sim.silo[idStr as CropId] ?? 0);
+      case 'vfuel': return () => { const v = sim.vehicle(id); return v ? `${Math.round(v.fuel)} / ${FUEL_CAP[v.kind]} L` : ''; };
+      case 'vcond': return () => { const v = sim.vehicle(id); return v ? `${Math.round(v.condition)}%` : ''; };
     }
     return undefined;
   }
@@ -523,13 +710,14 @@ export class UI implements ViewHost {
   private fieldStateText(fid: number) {
     const f = this.sim.world.fields.get(fid);
     if (!f) return '';
-    const s = f.summary(this.sim.clock);
+    const s = f.summary(this.sim.growth);
     const pct = (n: number) => `${Math.round((n / s.total) * 100)}%`;
     const crop = CROPS.find(c => s.cropCounts[c] > 0);
     const parts: string[] = [];
     if (crop) parts.push(CROP_DEFS[crop].name);
     if (s.ready) parts.push(`${pct(s.ready)} ripe`);
-    if (s.growing) parts.push(`growing, ${s.growthPct}% of the way`);
+    if (s.damaged) parts.push(`${pct(s.damaged)} flattened by storms`);
+    if (s.growing) parts.push(`growing, ${s.growthPct}% of the way${this.sim.season === 'winter' ? ' (resting for winter)' : ''}`);
     if (s.plowed) parts.push(`${pct(s.plowed)} plowed, ready to plant`);
     if (s.grass) parts.push(`${pct(s.grass)} grass`);
     if (s.stubble) parts.push(`${pct(s.stubble)} stubble`);
@@ -538,7 +726,7 @@ export class UI implements ViewHost {
 
   /** A rubber-stamp word for the field's main state. */
   private fieldStamp(f: Field) {
-    const s = f.summary(this.sim.clock);
+    const s = f.summary(this.sim.growth);
     if (s.ready) return '<span class="stamp red">Ripe</span>';
     if (s.growing) return '<span class="stamp green">Growing</span>';
     if (s.plowed) return '<span class="stamp brown">Plowed</span>';
@@ -607,6 +795,15 @@ export class UI implements ViewHost {
             ${v.kind === 'tractor' ? `<p class="meta">${tool ? `${icon(TOOL_ICON[tool.kind])}${cap1(TOOL_NAMES[tool.kind])} hitched` : 'No implement hitched'}</p>` : ''}
             <p class="status" data-live="vstatus:${v.id}"></p>
             ${cargo ? `<div class="gauge"><div class="gauge-bar"><span data-live="vcargobar:${v.id}" data-bar></span></div><span class="fig small" data-live="vcargo:${v.id}"></span></div>` : ''}
+            <dl class="soil two">
+              <div><dt>${icon('fuel')}Fuel</dt><dd class="fig" data-live="vfuel:${v.id}"></dd></div>
+              <div><dt>${icon('wrench')}Condition</dt><dd class="fig" data-live="vcond:${v.id}"></dd></div>
+            </dl>
+            <div class="btnrow">
+              <button class="primary" data-act="drive">${icon('wheel')}Drive</button>
+              ${v.fuel < FUEL_CAP[v.kind] * 0.9 ? `<button data-act="refuel">${icon('fuel')}Refuel</button>` : ''}
+              ${v.condition < 90 ? `<button data-act="repair" ${sim.money >= sim.repairCost(v) ? '' : 'disabled'}>${icon('wrench')}Repair <span class="fig">${money(sim.repairCost(v))}</span></button>` : ''}
+            </div>
             <div class="btnrow">
               <button data-act="follow" class="${this.follow ? 'on' : ''}">${icon('follow')}Follow</button>
               <button data-act="park">${icon('park')}Park</button>
@@ -678,7 +875,8 @@ export class UI implements ViewHost {
       const pick = v ? (check!.ok ? { vehicle: v } : { reason: check!.reason }) : sim.bestVehicleFor(f, n.op);
       if (d.costPerCell) side = `<span class="fig">${money(sim.eligibleCount(f, n.op) * d.costPerCell)}</span>`;
       if (pick.vehicle) {
-        who = `${pick.vehicle.name} will go`;
+        const est = sim.estimateJob(pick.vehicle, f, n.op);
+        who = `${pick.vehicle.name} will go · about ${money(est.wage)} in wages`;
       } else if ('buy' in pick && pick.buy) {
         const item = SHOP_ITEMS.find(i => i.id === pick.buy)!;
         action = `data-act="buyFor" data-arg="${item.id}"`;
@@ -718,14 +916,16 @@ export class UI implements ViewHost {
       const crops = CROPS.map(c => {
         const d = CROP_DEFS[c];
         const noPlanter = d.root && !sim.tools.some(t => t.kind === 'planter');
-        return `<button class="packet" data-act="plant" data-arg="${c}" ${noPlanter ? 'disabled' : ''}>
+        const season = sim.canPlant(c);
+        return `<button class="packet ${season ? '' : 'off'}" data-act="plant" data-arg="${c}" ${noPlanter || !season ? 'disabled' : ''}>
           ${icon(CROP_ICON[c], 'packet-ico')}<b>${d.name}</b>
           <span class="pk-row"><span>Grows</span><span class="fig">${d.growDays} d</span></span>
           <span class="pk-row"><span>Sells</span><span class="fig">${money(sim.prices[c])}</span></span>
           <span class="pk-row"><span>Seed</span><span class="fig">${noPlanter ? '—' : money(cells * d.seedCostPerCell)}</span></span>
-          ${noPlanter ? '<small class="warn">Needs root planter</small>' : ''}</button>`;
+          <span class="pk-row"><span>Plant</span><span class="fig">${d.seasons.map(x => SEASON_NAMES[x].slice(0, 3)).join('/')}</span></span>
+          ${!season ? `<small class="warn">Not in ${sim.seasonName.toLowerCase()}</small>` : noPlanter ? '<small class="warn">Needs root planter</small>' : ''}</button>`;
       }).join('');
-      return `<section class="sheet">${head}<p class="note">Pick a crop. Prices are per 1,000 L.</p><div class="packets">${crops}</div></section>`;
+      return `<section class="sheet">${head}<p class="note">Pick a crop for ${sim.seasonName.toLowerCase()}. Prices are per 1,000 L.</p><div class="packets">${crops}</div></section>`;
     }
     if (p.view === 'machines') {
       const list = sim.vehicles.map(m => `<button class="lrow" data-act="pickMachine" data-arg="${m.id}">
@@ -761,6 +961,36 @@ export class UI implements ViewHost {
             <button class="primary danger-fill" data-act="confirmYes">${this.pending?.yes ?? 'OK'}</button>
           </div>
         </div>`;
+      case 'finance': {
+        const row = (label: string, key: keyof Ledger, sign: 1 | -1) => {
+          const a = sim.ledger.today[key], b = sim.ledger.yesterday[key];
+          const f = (n: number) => n ? `${sign < 0 ? '-' : '+'}${money(n)}` : '—';
+          return `<div class="lrow static"><span class="lr-main"><span class="lr-line"><b>${label}</b><i></i><span class="fig">${f(a)}</span><span class="fig dim">${f(b)}</span></span></span></div>`;
+        };
+        const net = (l: Ledger) => l.sales - l.fuel - l.wages - l.repairs - l.interest - l.supplies;
+        const n0 = net(sim.ledger.today), n1 = net(sim.ledger.yesterday);
+        return `<div class="card">
+          ${head('Farm accounts', `Balance <span class="fig">${sim.money < 0 ? '-' : ''}${money(Math.abs(sim.money))}</span>`)}
+          <div class="lrow static cols"><span class="lr-main"><span class="lr-line"><small>Day ${sim.day}</small><i></i><small class="fig">Today</small><small class="fig dim">Yesterday</small></span></span></div>
+          <div class="ledger compact">
+            ${row('Sales', 'sales', 1)}
+            ${row('Wages', 'wages', -1)}
+            ${row('Fuel', 'fuel', -1)}
+            ${row('Seed & supplies', 'supplies', -1)}
+            ${row('Repairs', 'repairs', -1)}
+            ${row('Loan interest', 'interest', -1)}
+            <div class="lrow static total"><span class="lr-main"><span class="lr-line"><b>Net</b><i></i><span class="fig ${n0 < 0 ? 'warn' : ''}">${n0 < 0 ? '-' : '+'}${money(Math.abs(n0))}</span><span class="fig dim">${n1 < 0 ? '-' : '+'}${money(Math.abs(n1))}</span></span></span></div>
+          </div>
+          <p class="note">Hired workers cost ${money(WAGE_PER_SEC * 60)} a minute while they work. Drive a machine yourself and it's free.</p>
+          <p class="eyebrow gap">Bank loan</p>
+          <div class="lrow static"><span class="lr-ico">${icon('bank')}</span><span class="lr-main"><span class="lr-line"><b>Owed</b><i></i><span class="fig">${money(sim.loan)}</span></span>
+            <small>${(LOAN_DAILY_RATE * 100).toFixed(1)}% interest a day · up to ${money(LOAN_MAX)}</small></span></div>
+          <div class="btnrow">
+            <button data-act="repay" ${sim.loan > 0 && sim.money >= Math.min(LOAN_STEP, sim.loan) ? '' : 'disabled'}>Repay ${money(Math.min(LOAN_STEP, sim.loan || LOAN_STEP))}</button>
+            <button class="primary" data-act="borrow" ${sim.loan + LOAN_STEP <= LOAN_MAX ? '' : 'disabled'}>Borrow ${money(LOAN_STEP)}</button>
+          </div>
+        </div>`;
+      }
       case 'welcome':
         return `<div class="card">
           ${head('Harvest Valley', 'Your farm')}
@@ -770,8 +1000,9 @@ export class UI implements ViewHost {
             <li><b>Tap the field.</b> It lists what it needs; tap <b>Plow</b> and a tractor goes.</li>
             <li>Tap it again and <b>plant a crop</b>.</li>
             <li>When it turns golden, <b>harvest</b>. A tractor hauls the grain to the sell point.</li>
+            <li>Or tap a machine and <b>Drive</b> it yourself: hired workers cost wages, you don't.</li>
           </ol>
-          <p class="note">For bigger harvests: fertilize twice, lime the soil every few harvests, roll after planting and keep weeds out. Crops keep growing, more slowly, while you're away.</p>
+          <p class="note">Each crop has planting seasons and nothing grows in winter. Rain stops the combines, and storms flatten ripe crops left standing. Machines burn fuel (the pump is by the silo) and wear out.</p>
           <button class="primary wide" data-act="closeModal">Start farming</button>
         </div>`;
       case 'fleet':

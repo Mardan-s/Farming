@@ -352,7 +352,9 @@ export class Crops {
     const s = stage - 1;
     const stem = def.look.stages[s];
     const head = (def.look.heads ?? def.look.stages)[s];
-    const mats = this.layout(type, x, y, field.axis, def.look.height * STAGE_H[s], LAYOUT[type].width * STAGE_W[s]);
+    // Storm-flattened crops lie low and spread out.
+    const flat = field.damaged[i] ? 0.35 : 1;
+    const mats = this.layout(type, x, y, field.axis, def.look.height * STAGE_H[s] * flat, LAYOUT[type].width * STAGE_W[s] * (field.damaged[i] ? 1.35 : 1));
     this.pool(type, x, y).set(key, mats, stem, head);
     this.cropType.set(key, type);
   }

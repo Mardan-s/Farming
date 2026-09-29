@@ -85,6 +85,16 @@ describe('full farming loop', () => {
     expect(game.stats.soldLiters).toBeLessThanOrEqual(120 * 95 + 1);
   });
 
+  it('moves pre-season saves to the start of spring', () => {
+    const game = new Game();
+    const data = JSON.parse(JSON.stringify(game.save()));
+    data.clock = 14 * MINUTES_PER_DAY + 300; // winter
+    delete data.growth;
+    const { game: loaded } = Game.load(data);
+    expect(loaded.season).toBe('spring');
+    expect(loaded.growth).toBeGreaterThanOrEqual(14 * MINUTES_PER_DAY);
+  });
+
   it('round-trips through a save', () => {
     const game = new Game();
     game.createField(SQUARE);
@@ -362,6 +372,24 @@ describe('driving yourself', () => {
     expect(game.orderFieldOp(tractor.id, f.id, 'plow')).toBeNull();
     run(game, 400, () => game.toolOf(tractor)?.kind === 'plow');
     expect(game.toolOf(tractor)?.kind).toBe('plow');
+  });
+
+  it('harvests with a driven combine, but not in the wet', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 0; f.planted[i] = game.growth - 3 * MINUTES_PER_DAY; }
+    const combine = game.vehicles[1];
+    game.startDriving(combine.id);
+    combine.x = 15; combine.y = 50; combine.heading = 0;
+    game.wetness = 0.9;
+    expect(game.toggleImplement()).toMatch(/wet/);
+    game.wetness = 0;
+    expect(game.toggleImplement()).toBeNull();
+    game.setDriveInput(0, 1);
+    run(game, 4);
+    expect(combine.tank.amount).toBeGreaterThan(0);
+    expect(combine.tank.crop).toBe('wheat');
   });
 
   it('a driven vehicle is not dispatched by the AI', () => {

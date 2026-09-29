@@ -1062,6 +1062,15 @@ export class Game {
     return null;
   }
 
+  orderRefuel(vid: number): string | null {
+    const v = this.vehicle(vid);
+    if (!v) return 'Not available';
+    if (v.fuel >= FUEL_CAP[v.kind] - 1) return 'The tank is already full';
+    this.cancel(v);
+    v.steps = [...this.fuelSteps(v, 2), { t: 'park' }];
+    return null;
+  }
+
   orderPark(vid: number) {
     const v = this.vehicle(vid);
     if (!v) return;
@@ -1524,8 +1533,15 @@ export class Game {
     } else {
       g.weatherChangeAt = data.clock + 5 * 60;
     }
-    // Before seasons, crops grew on the plain clock.
+    // Before seasons, crops grew on the plain clock. Start those farms at the beginning of spring.
     g.growth = data.growth ?? data.clock;
+    if (data.growth == null) {
+      const cycle = SEASONS.length * SEASON_DAYS;
+      const day = Math.floor(g.clock / MINUTES_PER_DAY);
+      const spring = Math.floor(day / cycle) * cycle * MINUTES_PER_DAY + (g.clock % MINUTES_PER_DAY);
+      g.weatherChangeAt += spring - g.clock;
+      g.clock = spring;
+    }
     g.wetness = data.wetness ?? 0;
     g.loan = data.loan ?? 0;
     if (data.ledger) g.ledger = data.ledger;

@@ -1,10 +1,10 @@
 # Harvest Valley
 
-A 3D farming game for mobile (PC later), seen from an angled top-down camera. It's inspired by Farming Simulator but built for touch. You never drive by hand: tap a machine, tap a job, and it does the work.
+A 3D farming game for mobile (PC later), seen from an angled top-down camera. It's inspired by Farming Simulator but built for touch. Tap a field job and a hired worker does it, or jump into any machine and drive it yourself.
 
 ## How to play
 
-1. **Draw a field.** Tap ✏️ **New field**, then tap at least 4 grid corners on land you own. Tap the first corner again, or press **Create**.
+1. **Draw a field.** Tap **Draw field**, then tap at least 4 grid corners on land you own. Tap the first corner again, or press **Create**.
 2. **Tap the field.** It shows a short to-do list of what it needs right now, like Plow, Plant, Weeds or Harvest, with the most important job first. Tap a job and the best free machine goes, fetching the right implement from the farmyard. If you're missing a machine, the card offers to buy it. **More** lists the other jobs, and **Choose machine** lets you pick one yourself.
 3. **Plant.** Pick a crop from the swipeable crop picker: **wheat, barley, oats, corn, soybeans, canola, sunflowers, potatoes** or **sugar beets**. Each has its own grow time, yield and price.
 4. **Grow.** Crops grow as real plants that sway in the wind. They keep growing while the game is closed, but slower.
@@ -19,7 +19,13 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 
 **Root crops:** potatoes and sugar beets need the **root planter** and the self-propelled **root harvester**. Tractors borrow implements from other parked tractors automatically.
 
-**Weather:** sun, clouds, rain and thunderstorms roll through. Tap the clock for the forecast.
+**Drive it yourself.** Tap a machine, then **Drive**. The camera drops behind it. Steer with the left stick and use the gas and brake pedals on the right (brake again to reverse). On PC, use WASD or the arrow keys, E for the implement and Esc to get out. **Lower** the tool or header to work the ground you drive over. The buttons change with where you are: **Hitch** a tool behind you (or drop yours anywhere; workers will fetch it from there), **Sell load** at the sell point, **Into silo** at the silo, **Refuel** at the pump. Pull a wagon alongside a harvester to take its grain.
+
+**Running costs.** Hired workers are paid for every second they work, and each job row shows an estimate. You don't pay yourself. Machines burn diesel (the pump is next to the silo; workers top up by themselves) and wear out: under 30% condition they slow down, so repair them from the machine's card. Tap your balance for the farm accounts (today vs. yesterday) and a bank loan with daily interest.
+
+**Seasons.** Each season lasts 4 days: spring, summer, autumn, winter. Every crop has planting seasons (wheat, barley and canola can be sown in autumn), and nothing grows in winter, when snow covers the farm.
+
+**Weather that matters.** Rain soaks the crop, and combines can't cut until the sun dries it. Thunderstorms flatten ripe crops (−40% yield on those cells), especially crops left standing long after they ripen. Tap the clock for the forecast and harvest before a storm.
 
 Grow the farm: buy **land plots**, more **machines**, and **upgrades** (wider plows and seeders, bigger combine tanks and wagons, faster tractors). The **market** price for each crop changes daily. Store grain in the silo and sell when prices spike.
 
@@ -28,15 +34,15 @@ Controls: drag to pan, pinch or scroll to zoom, twist two fingers (or use ⟲ �
 ## Tech
 
 - TypeScript + [Three.js](https://threejs.org/) + Vite
-- Every model is built in code (rounded bodies, physically based materials), and ground textures are drawn on canvases, so there are no asset files
+- Every model is built in code (rounded bodies, Lambert shading that works on any phone GPU), and ground textures are drawn on canvases, so there are no asset files
 - Crops, weeds and meadow grass are individual instanced plants with a wind shader, batched per map chunk
-- Physical sky, sky-lit reflections, tone mapping, sun shadows, day/night and weather
+- Physical sky, tone mapping, sun shadows, day/night, rain, snow and lightning; a safe graphics mode turns on by itself if a shader fails
 - Low/Medium/High graphics setting (in Settings)
 - The build is a single self-contained `dist/index.html` that runs anywhere, including from a file
 - Progress autosaves to `localStorage`
 
 ```
-src/game/      simulation (pure TS, no Phaser): fields, vehicles, jobs, market, saving
+src/game/      simulation (pure TS): fields, vehicles, jobs, driving, seasons, weather, costs, market, saving
 src/render3d/  Three.js view: camera, ground chunks, instanced crops, models, particles
 src/ui/        DOM HUD, bottom sheet, modals
 tests/         Vitest tests, including a headless full farming loop
@@ -54,6 +60,5 @@ npm run build      # typecheck + single-file build into dist/
 ## Roadmap ideas
 
 - Roads and pathfinding around fields
-- Fertilizer, weeds, and crop yield quality
-- More crops (canola, sunflowers, potatoes), livestock, and contracts
+- Livestock, contracts and more machines
 - Wrap for the iOS/Android stores (Capacitor) and PC (Electron/Steam)
