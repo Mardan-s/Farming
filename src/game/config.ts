@@ -61,6 +61,8 @@ export interface CropDef {
   color: number; // grain color
   /** Root crops need the root planter and root harvester instead of the seeder and combine. */
   root?: boolean;
+  /** Seasons in which this crop can be planted. */
+  seasons: Season[];
   /** 3D look: dense grain carpet or distinct rows, height in cells, and colors per growth stage. */
   look: {
     style: 'grain' | 'row';
@@ -73,23 +75,23 @@ export interface CropDef {
 }
 
 export const CROP_DEFS: Record<CropId, CropDef> = {
-  wheat: { name: 'Wheat', icon: '🌾', growDays: 2, yieldPerCell: 95, seedCostPerCell: 4, basePrice: 330, color: 0xe2bf5a,
+  wheat: { name: 'Wheat', icon: '🌾', growDays: 2, yieldPerCell: 95, seedCostPerCell: 4, basePrice: 330, color: 0xe2bf5a, seasons: ['spring', 'autumn'],
     look: { style: 'grain', plant: 'grain', height: 0.42, stages: [0x8cc24e, 0x74ad40, 0x5f9a36, 0xcfa944], heads: [0x8cc24e, 0x7fb448, 0xa2c65c, 0xecc65a] } },
-  corn: { name: 'Corn', icon: '🌽', growDays: 3, yieldPerCell: 130, seedCostPerCell: 6, basePrice: 300, color: 0xf2c230,
+  corn: { name: 'Corn', icon: '🌽', growDays: 3, yieldPerCell: 130, seedCostPerCell: 6, basePrice: 300, color: 0xf2c230, seasons: ['spring', 'summer'],
     look: { style: 'row', plant: 'corn', height: 1.05, stages: [0x5aa845, 0x44983a, 0x378a31, 0xc4a560], heads: [0x5aa845, 0x44983a, 0xd6c65e, 0xc79f4c], stalks: true } },
-  soy: { name: 'Soybeans', icon: '🫘', growDays: 2.5, yieldPerCell: 72, seedCostPerCell: 5, basePrice: 520, color: 0xc9a86a,
+  soy: { name: 'Soybeans', icon: '🫘', growDays: 2.5, yieldPerCell: 72, seedCostPerCell: 5, basePrice: 520, color: 0xc9a86a, seasons: ['spring', 'summer'],
     look: { style: 'row', plant: 'bush', height: 0.34, stages: [0x72bb50, 0x5aa843, 0x4a973a, 0xb08a40] } },
-  barley: { name: 'Barley', icon: '🍺', growDays: 1.75, yieldPerCell: 100, seedCostPerCell: 4, basePrice: 300, color: 0xd9c27e,
+  barley: { name: 'Barley', icon: '🍺', growDays: 1.75, yieldPerCell: 100, seedCostPerCell: 4, basePrice: 300, color: 0xd9c27e, seasons: ['spring', 'autumn'],
     look: { style: 'grain', plant: 'grain', height: 0.36, stages: [0x9acb5c, 0x88bb52, 0x7aac4e, 0xd4bf80], heads: [0x9acb5c, 0x8cbf55, 0xaacb6a, 0xe8d69a] } },
-  oats: { name: 'Oats', icon: '🥣', growDays: 1.5, yieldPerCell: 80, seedCostPerCell: 3, basePrice: 360, color: 0xe6dcb0,
+  oats: { name: 'Oats', icon: '🥣', growDays: 1.5, yieldPerCell: 80, seedCostPerCell: 3, basePrice: 360, color: 0xe6dcb0, seasons: ['spring', 'summer'],
     look: { style: 'grain', plant: 'grain', height: 0.4, stages: [0x8cc574, 0x7ab46a, 0x6ea566, 0xd6cc98], heads: [0x8cc574, 0x80b86e, 0xa8c98c, 0xefe5bb] } },
-  canola: { name: 'Canola', icon: '🌼', growDays: 2.75, yieldPerCell: 70, seedCostPerCell: 6, basePrice: 600, color: 0x2e2a20,
+  canola: { name: 'Canola', icon: '🌼', growDays: 2.75, yieldPerCell: 70, seedCostPerCell: 6, basePrice: 600, color: 0x2e2a20, seasons: ['autumn', 'spring'],
     look: { style: 'grain', plant: 'canola', height: 0.55, stages: [0x68b256, 0x55a34c, 0x4f9a46, 0x6b6a33], heads: [0x68b256, 0x5fae52, 0xf7dc2a, 0x5a5530] } },
-  sunflower: { name: 'Sunflowers', icon: '🌻', growDays: 3.5, yieldPerCell: 75, seedCostPerCell: 6, basePrice: 640, color: 0x3b3328,
+  sunflower: { name: 'Sunflowers', icon: '🌻', growDays: 3.5, yieldPerCell: 75, seedCostPerCell: 6, basePrice: 640, color: 0x3b3328, seasons: ['spring', 'summer'],
     look: { style: 'row', plant: 'sunflower', height: 1.2, stages: [0x62ae4a, 0x4a9a3c, 0x43903a, 0x6b5a2e], heads: [0x62ae4a, 0x5ca044, 0xf5c518, 0x3a2a18], stalks: true } },
-  potato: { name: 'Potatoes', icon: '🥔', growDays: 3, yieldPerCell: 320, seedCostPerCell: 14, basePrice: 145, color: 0xc9a36a, root: true,
+  potato: { name: 'Potatoes', icon: '🥔', growDays: 3, yieldPerCell: 320, seedCostPerCell: 14, basePrice: 145, color: 0xc9a36a, seasons: ['spring'], root: true,
     look: { style: 'row', plant: 'bush', height: 0.4, stages: [0x66b04e, 0x52a044, 0x46953c, 0x8f8440], heads: [0x66b04e, 0x52a044, 0xe4d6ef, 0x8f8440] } },
-  sugarbeet: { name: 'Sugar beets', icon: '🍠', growDays: 3.5, yieldPerCell: 380, seedCostPerCell: 9, basePrice: 115, color: 0xeadfca, root: true,
+  sugarbeet: { name: 'Sugar beets', icon: '🍠', growDays: 3.5, yieldPerCell: 380, seedCostPerCell: 9, basePrice: 115, color: 0xeadfca, seasons: ['spring'], root: true,
     look: { style: 'row', plant: 'bush', height: 0.46, stages: [0x5aa848, 0x46983f, 0x3b8b38, 0x6f9c42] } },
 };
 
@@ -97,7 +99,34 @@ export function emptyCropRecord<T>(value: () => T): Record<CropId, T> {
   return Object.fromEntries(CROPS.map(c => [c, value()])) as Record<CropId, T>;
 }
 
+export type Season = 'spring' | 'summer' | 'autumn' | 'winter';
+export const SEASONS: Season[] = ['spring', 'summer', 'autumn', 'winter'];
+export const SEASON_DAYS = 4;
+export const SEASON_NAMES: Record<Season, string> = { spring: 'Spring', summer: 'Summer', autumn: 'Autumn', winter: 'Winter' };
+
 export type VehicleKind = 'tractor' | 'combine' | 'rootHarvester';
+
+// Running costs.
+export const FUEL_CAP: Record<VehicleKind, number> = { tractor: 260, combine: 420, rootHarvester: 400 };
+/** Liters per real second: idling, driving, working. */
+export const FUEL_USE = { idle: 0.02, drive: 0.16, work: 0.32 };
+export const FUEL_PRICE = 1.6;
+export const WAGE_PER_SEC = 4; // hired worker, per real second of work at 1x
+export const WEAR_PER_SEC = { drive: 0.012, work: 0.035 }; // condition % per second
+export const REPAIR_COST_PER_PCT: Record<VehicleKind, number> = { tractor: 28, combine: 60, rootHarvester: 55 };
+export const LOAN_STEP = 10000;
+export const LOAN_MAX = 150000;
+export const LOAN_DAILY_RATE = 0.008;
+export const PUMP = { x: 5.2, y: 49.8 };
+/** Harvesting stops above this wetness (0..1); rain wets crops, sun dries them. */
+export const WET_LIMIT = 0.3;
+/** Wetness change per game minute for each kind of weather. */
+export const WET_RATE: Record<Weather, number> = { sun: -0.0025, cloudy: -0.0008, rain: 0.004, storm: 0.007 };
+export const REFUEL_RATE = 45; // liters per second at the pump
+/** Storm damage: yield left on flattened cells, and the chance per second of flattening a ripe cell. */
+export const STORM_YIELD = 0.6;
+export const STORM_CHANCE = { ripe: 0.004, overripe: 0.03 };
+export const OVERRIPE_DAYS = 0.75;
 export type ToolKind = 'plow' | 'seeder' | 'wagon' | 'spreader' | 'roller' | 'weeder' | 'sprayer' | 'planter';
 
 /** Every field job. Tractor jobs name the implement they need. */

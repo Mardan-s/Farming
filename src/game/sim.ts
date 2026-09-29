@@ -4,7 +4,9 @@ import {
   OFFLINE_RATE, OP_DEFS, PLOW_WIDTH, ROOT_SPEED, ROOT_TANK, SEEDER_WIDTH, SELL_UNLOAD, SHOP_ITEMS, SILO_CAP, SILO_UNLOAD,
   SPEEDS, START_MONEY, START_PARCEL, TOOL_LEN, TOOL_SLOTS, TRACTOR_SPEED, UNLOAD_RATE, UPGRADES, VEHICLE_SLOTS,
   WAGON_CAP, WEATHER_DEFS, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
-  type CropId, type Op, type ToolKind, type UpgradeId, type VehicleKind, type Weather,
+  FUEL_CAP, FUEL_PRICE, FUEL_USE, LOAN_DAILY_RATE, LOAN_MAX, LOAN_STEP, MAP_H, OVERRIPE_DAYS, PUMP, REFUEL_RATE,
+  REPAIR_COST_PER_PCT, SEASONS, SEASON_DAYS, SEASON_NAMES, STORM_CHANCE, WAGE_PER_SEC, WEAR_PER_SEC, WET_LIMIT, WET_RATE,
+  type CropId, type Op, type Season, type ToolKind, type UpgradeId, type VehicleKind, type Weather,
 } from './config';
 import { planPasses, type Axis } from './coverage';
 import { CellState, Field, READY_STAGE, Weeds, type FieldSave } from './field';
@@ -30,7 +32,23 @@ export type Step =
   | { t: 'waitTool'; toolId: number }
   | { t: 'work'; op: Op; fieldId: number; crop?: CropId; level?: number; path?: Waypoint[]; idx?: number; rounds?: number; abort?: boolean }
   | { t: 'follow'; combineId: number }
-  | { t: 'unload'; dest: Dest; earned?: number };
+  | { t: 'unload'; dest: Dest; earned?: number }
+  | { t: 'refuel' };
+
+export type Expense = 'fuel' | 'wages' | 'repairs' | 'interest' | 'supplies';
+export type Ledger = Record<Expense | 'sales', number>;
+const emptyLedger = (): Ledger => ({ sales: 0, fuel: 0, wages: 0, repairs: 0, interest: 0, supplies: 0 });
+
+/** What the driven machine can do where it stands; the driving HUD shows buttons from this. */
+export interface DriveContext {
+  op: Op | null;
+  opLabel: string;
+  lowered: boolean;
+  unload: Dest | null;
+  refuel: boolean;
+  hitch: 'unhitch' | 'hitch' | null;
+  hitchName: string;
+}
 
 export interface Vehicle {
   id: number;
@@ -44,12 +62,16 @@ export interface Vehicle {
   tank: Cargo;
   steps: Step[];
   autoUnload: boolean;
+  fuel: number;
+  condition: number; // 0-100 %
   // Runtime-only flags, rebuilt every frame.
   status: string;
   moving: boolean;
   working: Op | null;
   unloadingTo: number | null;
   waiting: boolean;
+  /** Signed ground speed while you drive it. */
+  speed: number;
 }
 
 export interface Tool {
@@ -92,6 +114,11 @@ export function toolForOp(op: Op, crop?: CropId): ToolKind | undefined {
   return OP_DEFS[op].tool;
 }
 
+/** "Spring or Autumn" */
+export function plantWindow(crop: CropId) {
+  return CROP_DEFS[crop].seasons.map(x => SEASON_NAMES[x]).join(' or ');
+}
+
 function gauss() {
   const u = 1 - Math.random();
   const v = Math.random();
@@ -99,6 +126,23 @@ function gauss() {
 }
 
 export interface OfflineReport { minutes: number; days: number }
+
+export function seasonAt(clock: number): Season {
+  return SEASONS[Math.floor(Math.floor(clock / MINUTES_PER_DAY) / SEASON_DAYS) % SEASONS.length];
+}
+
+/** Game minutes of crop growth between two clock times: everything except winter. */
+export function growthBetween(from: number, to: number) {
+  let g = 0;
+  let c = from;
+  while (c < to) {
+    const dayEnd = (Math.floor(c / MINUTES_PER_DAY) + 1) * MINUTES_PER_DAY;
+    const end = Math.min(to, dayEnd);
+    if (seasonAt(c) !== 'winter') g += end - c;
+    c = end;
+  }
+  return g;
+}
 
 export class Game {
   readonly world = new World();
@@ -120,6 +164,21 @@ export class Game {
   weather: Weather = 'sun';
   weatherNext: Weather = 'cloudy';
   weatherChangeAt = 6 * 60 + 5 * 60;
+  /** Growth clock in game minutes: runs with the clock but stops in winter. */
+  growth = 6 * 60;
+  /** How wet the crops are, 0..1. Above WET_LIMIT combines can't harvest. */
+  wetness = 0;
+  loan = 0;
+  ledger = { today: emptyLedger(), yesterday: emptyLedger() };
+  // Driving.
+  drivenId: number | null = null;
+  input = { steer: 0, throttle: 0 };
+  implDown = false;
+  driveCrop: CropId = 'wheat';
+  driveSpread: 'fertilize' | 'lime' = 'fertilize';
+  private driveTouched = new Set<number>();
+  private lastWork: Pt | null = null;
+  private stormHit = new Set<number>();
   private nextId = 1;
   private nextFieldId = 1;
   private tick = 0;
@@ -138,6 +197,13 @@ export class Game {
   get day() { return Math.floor(this.clock / MINUTES_PER_DAY) + 1; }
   get timeOfDay() { return this.clock % MINUTES_PER_DAY; }
   get speed() { return SPEEDS[this.speedIdx]; }
+  get season(): Season { return seasonAt(this.clock); }
+  get seasonDay() { return (Math.floor(this.clock / MINUTES_PER_DAY) % SEASON_DAYS) + 1; }
+  get seasonName() { return SEASON_NAMES[this.season]; }
+  get tooWet() { return this.wetness > WET_LIMIT; }
+  get driven() { return this.drivenId == null ? undefined : this.vehicle(this.drivenId); }
+  isDriven(v: Vehicle) { return this.drivenId === v.id; }
+  canPlant(crop: CropId) { return CROP_DEFS[crop].seasons.includes(this.season); }
 
   vehicle(id: number) { return this.vehicles.find(v => v.id === id); }
   tool(id: number | null) { return id == null ? undefined : this.tools.find(t => t.id === id); }
@@ -152,9 +218,20 @@ export class Game {
   }
 
   speedOf(v: Vehicle) {
-    if (v.kind === 'tractor') return TRACTOR_SPEED[this.upgrades.engine];
-    return v.kind === 'rootHarvester' ? ROOT_SPEED : COMBINE_SPEED;
+    const base = v.kind === 'tractor' ? TRACTOR_SPEED[this.upgrades.engine] : v.kind === 'rootHarvester' ? ROOT_SPEED : COMBINE_SPEED;
+    return base * this.healthFactor(v);
   }
+
+  /** Empty tanks limp along; worn machines run slower. */
+  healthFactor(v: Vehicle) {
+    let k = 1;
+    if (v.fuel <= 0) k *= 0.35;
+    if (v.condition <= 0) k *= 0.5;
+    else if (v.condition < 30) k *= 0.75;
+    return k;
+  }
+
+  repairCost(v: Vehicle) { return Math.ceil((100 - v.condition) * REPAIR_COST_PER_PCT[v.kind]); }
 
   toolWidth(kind: ToolKind | 'header' | 'rootHeader') {
     if (kind === 'plow') return PLOW_WIDTH[this.upgrades.plow];
@@ -178,7 +255,19 @@ export class Game {
     return -(HITCH_OFFSET + (t ? TOOL_LEN[t.kind] / 2 : 0));
   }
 
-  isIdle(v: Vehicle) { return v.steps.length === 0 || (v.steps.length === 1 && v.steps[0].t === 'park'); }
+  isIdle(v: Vehicle) {
+    return !this.isDriven(v) && (v.steps.length === 0 || (v.steps.length === 1 && v.steps[0].t === 'park'));
+  }
+
+  /** A harvester that is cutting right now, by AI or by you. */
+  isHarvesting(c: Vehicle) { return this.isDriven(c) ? this.implDown : c.steps[0]?.t === 'work'; }
+
+  /** Whether a hitched tool is unfolded and working. */
+  toolWorking(t: Tool) {
+    const v = t.attachedTo != null ? this.vehicle(t.attachedTo) : undefined;
+    if (!v) return false;
+    return this.isDriven(v) ? this.implDown : v.steps[0]?.t === 'work';
+  }
 
   eligibleCount(field: Field, op: Op, crop?: CropId, level?: number) {
     let n = 0;
@@ -193,12 +282,12 @@ export class Game {
     switch (op) {
       case 'plow': return s === CellState.Grass || s === CellState.Stubble;
       case 'seed': return s === CellState.Plowed;
-      case 'harvest': return seeded && field.isReady(i, this.clock) && (!crop || field.cropAt(i) === crop);
-      case 'fertilize': return field.fert[i] < Math.min(2, level) && (s === CellState.Plowed || (seeded && field.stage(i, this.clock) < READY_STAGE));
+      case 'harvest': return seeded && field.isReady(i, this.growth) && (!crop || field.cropAt(i) === crop);
+      case 'fertilize': return field.fert[i] < Math.min(2, level) && (s === CellState.Plowed || (seeded && field.stage(i, this.growth) < READY_STAGE));
       case 'lime': return field.lime[i] === 0;
-      case 'roll': return seeded && !field.rolled[i] && field.stage(i, this.clock) <= 1;
-      case 'weed': return seeded && field.weeds[i] !== Weeds.Protected && field.stage(i, this.clock) <= 2;
-      case 'spray': return seeded && field.weeds[i] !== Weeds.Protected && field.stage(i, this.clock) < READY_STAGE;
+      case 'roll': return seeded && !field.rolled[i] && field.stage(i, this.growth) <= 1;
+      case 'weed': return seeded && field.weeds[i] !== Weeds.Protected && field.stage(i, this.growth) <= 2;
+      case 'spray': return seeded && field.weeds[i] !== Weeds.Protected && field.stage(i, this.growth) < READY_STAGE;
     }
   }
 
@@ -211,7 +300,8 @@ export class Game {
     const v: Vehicle = {
       id: this.nextId++, kind, name: `${VEHICLE_NAMES[kind]} ${count}`,
       x: pos.x, y: pos.y, heading: -Math.PI / 2, slot, toolId: null, tank: { crop: null, amount: 0 }, steps: [],
-      autoUnload: true, status: 'Idle', moving: false, working: null, unloadingTo: null, waiting: false,
+      autoUnload: true, fuel: FUEL_CAP[kind], condition: 100,
+      status: 'Idle', moving: false, working: null, unloadingTo: null, waiting: false, speed: 0,
     };
     this.vehicles.push(v);
     return v;
@@ -230,12 +320,21 @@ export class Game {
   update(dtReal: number) {
     const dt = Math.min(dtReal, 0.1);
     const prevDay = this.day;
-    this.clock += dt * GAME_MIN_PER_SEC * this.speed;
+    const prevSeason = this.season;
+    const mins = dt * GAME_MIN_PER_SEC * this.speed;
+    this.growth += growthBetween(this.clock, this.clock + mins);
+    this.clock += mins;
     if (this.day !== prevDay) this.newDay();
+    if (this.season !== prevSeason) this.events.emit('season', this.season);
     if (this.clock >= this.weatherChangeAt) this.advanceWeather();
+    this.wetness = Math.min(1, Math.max(0, this.wetness + WET_RATE[this.weather] * mins * (this.weather === 'sun' && !this.isDaytime ? 0.4 : 1)));
 
     for (const v of this.vehicles) { v.moving = false; v.working = null; v.unloadingTo = null; v.waiting = false; }
-    for (const v of this.vehicles) this.updateVehicle(v, dt);
+    for (const v of this.vehicles) {
+      if (this.isDriven(v)) this.updateDriven(v, dt);
+      else this.updateVehicle(v, dt);
+      this.runningCosts(v, dt);
+    }
     this.updateTools();
 
     this.tick += dt;
@@ -243,7 +342,55 @@ export class Game {
       this.tick = 0;
       this.dispatchUnloaders();
       this.growWeeds();
+      this.stormDamage();
       this.checkGoals();
+    }
+  }
+
+  get isDaytime() { const h = this.timeOfDay / 60; return h >= 6 && h < 20; }
+
+  /** Fuel burn, machine wear and hired-worker wages for one frame. */
+  private runningCosts(v: Vehicle, dt: number) {
+    const driven = this.isDriven(v);
+    const busy = driven || v.steps.length > 0;
+    if (!busy) return;
+    const use = v.working ? FUEL_USE.work : v.moving ? FUEL_USE.drive : FUEL_USE.idle;
+    if (v.fuel > 0) v.fuel = Math.max(0, v.fuel - use * dt);
+    const wear = v.working ? WEAR_PER_SEC.work : v.moving ? WEAR_PER_SEC.drive : 0;
+    const before = v.condition;
+    v.condition = Math.max(0, v.condition - wear * dt);
+    if (before >= 30 && v.condition < 30) this.events.emit('toast', `🔧 ${v.name} is worn out and slowing down — repair it`, 'bad');
+    if (!driven && !v.waiting) this.spend('wages', WAGE_PER_SEC * dt);
+  }
+
+  spend(kind: Expense, amount: number) {
+    this.money -= amount;
+    this.ledger.today[kind] += amount;
+  }
+
+  private earn(amount: number) {
+    this.money += amount;
+    this.ledger.today.sales += amount;
+  }
+
+  /** Storms flatten ripe crops, and crops left ripe too long go down fastest. */
+  private stormDamage() {
+    if (this.weather !== 'storm') { this.stormHit.clear(); return; }
+    for (const f of this.world.fields.values()) {
+      let hit = 0;
+      for (let i = 0; i < f.cells.length; i++) {
+        if (f.damaged[i] || !f.isReady(i, this.growth)) continue;
+        const def = CROP_DEFS[f.cropAt(i)!];
+        const over = this.growth - f.planted[i] > (def.growDays + OVERRIPE_DAYS) * MINUTES_PER_DAY;
+        if (Math.random() >= (over ? STORM_CHANCE.overripe : STORM_CHANCE.ripe)) continue;
+        f.damaged[i] = 1;
+        hit++;
+        this.events.emit('cell', f.id, i);
+      }
+      if (hit && !this.stormHit.has(f.id)) {
+        this.stormHit.add(f.id);
+        this.events.emit('toast', `⛈️ The storm is flattening ripe crops on Field ${f.id}`, 'bad');
+      }
     }
   }
 
@@ -263,6 +410,10 @@ export class Game {
       this.weatherChangeAt += (3 + Math.random() * 6) * 60;
     }
     this.events.emit('weather', this.weather);
+    if (this.weatherNext === 'storm') {
+      const ripe = [...this.world.fields.values()].filter(f => f.summary(this.growth).ready > 0);
+      if (ripe.length) this.events.emit('toast', `⛈️ Storm on the way — harvest Field ${ripe.map(f => f.id).join(', ')} before it hits`, 'bad');
+    }
   }
 
   /** Weeds creep into growing crops that haven't been weeded or sprayed. */
@@ -270,7 +421,7 @@ export class Game {
     for (const f of this.world.fields.values()) {
       for (let i = 0; i < f.cells.length; i++) {
         if (f.state[i] !== CellState.Seeded || f.weeds[i] !== Weeds.None || !f.weedProne(i)) continue;
-        if (f.stage(i, this.clock) < 2) continue;
+        if (f.stage(i, this.growth) < 2) continue;
         f.weeds[i] = Weeds.Present;
         this.events.emit('cell', f.id, i);
       }
@@ -278,6 +429,9 @@ export class Game {
   }
 
   private newDay() {
+    this.ledger.yesterday = this.ledger.today;
+    this.ledger.today = emptyLedger();
+    if (this.loan > 0) this.spend('interest', this.loan * LOAN_DAILY_RATE);
     for (const c of CROPS) {
       const base = CROP_DEFS[c].basePrice;
       let p = this.prices[c];
@@ -318,15 +472,15 @@ export class Game {
         const tool = this.tool(step.toolId);
         v.status = `Hitching ${tool ? TOOL_NAMES[tool.kind] : 'tool'}`;
         step.timer = (step.timer ?? 0) + dt;
-        v.heading = angleLerp(v.heading, 0, Math.min(1, dt * 10));
+        const want = tool?.heading ?? 0;
+        v.heading = angleLerp(v.heading, want, Math.min(1, dt * 10));
         if (step.timer < 0.4) break;
-        v.heading = 0;
+        v.heading = want;
         if (tool && tool.attachedTo == null) {
           tool.attachedTo = v.id;
           tool.reservedBy = null;
-          tool.heading = 0;
-          tool.x = v.x - HITCH_OFFSET - TOOL_LEN[tool.kind] / 2;
-          tool.y = v.y;
+          tool.x = v.x - Math.cos(want) * (HITCH_OFFSET + TOOL_LEN[tool.kind] / 2);
+          tool.y = v.y - Math.sin(want) * (HITCH_OFFSET + TOOL_LEN[tool.kind] / 2);
           v.toolId = tool.id;
         }
         v.steps.shift();
@@ -359,7 +513,25 @@ export class Game {
       case 'work': this.stepWork(v, step, dt); break;
       case 'follow': this.stepFollow(v, step, dt); break;
       case 'unload': this.stepUnload(v, step, dt); break;
+      case 'refuel': this.stepRefuel(v, dt); break;
     }
+  }
+
+  private stepRefuel(v: Vehicle, dt: number) {
+    const cap = FUEL_CAP[v.kind];
+    const amt = Math.min(REFUEL_RATE * dt, cap - v.fuel);
+    v.fuel += amt;
+    this.spend('fuel', amt * FUEL_PRICE);
+    v.status = `Refueling · ${Math.round((v.fuel / cap) * 100)}%`;
+    if (v.fuel >= cap - 0.01) {
+      v.fuel = cap;
+      v.steps.shift();
+    }
+  }
+
+  /** Steps to top up at the pump first when the tank is getting low. */
+  private fuelSteps(v: Vehicle, below = 0.3): Step[] {
+    return v.fuel < FUEL_CAP[v.kind] * below ? [{ t: 'goto', x: PUMP.x + 1.2, y: PUMP.y }, { t: 'refuel' }] : [];
   }
 
   private moveTo(v: Vehicle, tx: number, ty: number, speed: number, dt: number): boolean {
@@ -399,7 +571,19 @@ export class Game {
       s.path = path;
       s.idx = 0;
     }
+    if (v.fuel < FUEL_CAP[v.kind] * 0.06) {
+      // Nip back to the pump, then restart the current pass from its beginning.
+      s.idx = Math.floor(s.idx! / 4) * 4;
+      v.steps.unshift(...this.fuelSteps(v, 1));
+      this.events.emit('toast', `⛽ ${v.name} is low on fuel and heading to the pump`, 'info');
+      return;
+    }
     const wp = s.path[s.idx!];
+    if (s.op === 'harvest' && wp.work && this.tooWet) {
+      v.waiting = true;
+      v.status = 'Crop too wet to harvest — waiting for it to dry';
+      return;
+    }
     if (s.op === 'harvest' && wp.work) {
       const cargo = this.cargoOf(v)!;
       const per = CROP_DEFS[s.crop!].yieldPerCell * wp.work.width * 1.3;
@@ -485,7 +669,7 @@ export class Game {
       case 'seed':
         field.state[i] = CellState.Seeded;
         field.crop[i] = CROPS.indexOf(s.crop!);
-        field.planted[i] = this.clock;
+        field.planted[i] = this.growth;
         field.rolled[i] = 0;
         field.weeds[i] = Weeds.None;
         this.stats.seeded++;
@@ -512,7 +696,7 @@ export class Game {
         break;
       }
     }
-    this.money -= cost;
+    if (cost > 0) this.spend('supplies', cost);
     this.events.emit('cell', field.id, i);
     return true;
   }
@@ -531,7 +715,7 @@ export class Game {
     if (!c || !wagon || wagon.kind !== 'wagon') { v.steps.shift(); return; }
     const cap = WAGON_CAP[this.upgrades.wagon];
     const load = wagon.load;
-    const combineWorking = c.steps[0]?.t === 'work';
+    const combineWorking = this.isHarvesting(c);
     const mismatch = load.amount > 0 && c.tank.amount > 0 && c.tank.crop !== load.crop;
     if (load.amount >= cap - 1 || (!combineWorking && c.tank.amount <= 0.5) || mismatch) {
       v.steps.shift();
@@ -586,7 +770,7 @@ export class Game {
       v.status = 'Unloading into the silo';
     } else {
       const earned = (amt / 1000) * this.prices[crop];
-      this.money += earned;
+      this.earn(earned);
       s.earned = (s.earned ?? 0) + earned;
       this.stats.soldLiters += amt;
       this.stats.earned += earned;
@@ -617,7 +801,7 @@ export class Game {
     for (const c of this.vehicles) {
       if (!isHarvester(c) || !c.autoUnload || c.tank.amount <= 0) continue;
       const cap = this.cargoOf(c)!.cap;
-      const working = c.steps[0]?.t === 'work';
+      const working = this.isHarvesting(c);
       if (working && c.tank.amount < cap * AUTO_UNLOAD_THRESHOLD) continue;
       const assigned = this.vehicles.some(t => t.steps.some(st => st.t === 'follow' && st.combineId === c.id));
       if (assigned) continue;
@@ -652,11 +836,19 @@ export class Game {
   // ---------- orders ----------
 
   cancel(v: Vehicle) {
+    if (this.isDriven(v)) this.stopDriving();
     v.steps = [];
     for (const t of this.tools) if (t.reservedBy === v.id) t.reservedBy = null;
   }
 
+  /** Where a tractor stops to hitch a tool, wherever the tool was left. */
   private attachPoint(t: Tool): Pt {
+    const d = HITCH_OFFSET + TOOL_LEN[t.kind] / 2;
+    return { x: t.x + Math.cos(t.heading) * d, y: t.y + Math.sin(t.heading) * d };
+  }
+
+  /** Where a tractor stops to drop a tool back in its farmyard slot. */
+  private homePoint(t: Tool): Pt {
     const home = slotPos(TOOL_SLOTS, t.slot);
     return { x: home.x + HITCH_OFFSET + TOOL_LEN[t.kind] / 2, y: home.y };
   }
@@ -678,15 +870,17 @@ export class Game {
       if (lend) {
         const steps: Step[] = [];
         if (cur) {
-          const p = this.attachPoint(cur);
+          const p = this.homePoint(cur);
           steps.push({ t: 'goto', x: p.x, y: p.y }, { t: 'detach' });
         }
-        const p = this.attachPoint(lend);
+        // The lending tractor drops it at home, so hitch it there.
+        const p = this.homePoint(lend);
         steps.push({ t: 'waitTool', toolId: lend.id }, { t: 'goto', x: p.x, y: p.y }, { t: 'attach', toolId: lend.id });
         if (reserve) {
           const holder = this.vehicle(lend.attachedTo!)!;
           this.cancel(holder);
-          holder.steps = [{ t: 'goto', x: p.x, y: p.y }, { t: 'detach' }, { t: 'park' }];
+          const h = this.homePoint(lend);
+          holder.steps = [{ t: 'goto', x: h.x, y: h.y }, { t: 'detach' }, { t: 'park' }];
           lend.reservedBy = v.id;
         }
         return steps;
@@ -699,7 +893,7 @@ export class Game {
     }
     const steps: Step[] = [];
     if (cur) {
-      const p = this.attachPoint(cur);
+      const p = this.homePoint(cur);
       steps.push({ t: 'goto', x: p.x, y: p.y }, { t: 'detach' });
     }
     const p = this.attachPoint(target);
@@ -718,7 +912,7 @@ export class Game {
     if (op === 'harvest') {
       if (!isHarvester(v)) return { ok: false, reason: 'Needs a combine or root harvester', cells: 0 };
       const roots = v.kind === 'rootHarvester';
-      const sum = field.summary(this.clock);
+      const sum = field.summary(this.growth);
       const mine = CROPS.filter(c => !!CROP_DEFS[c].root === roots);
       const otherReady = CROPS.some(c => !mine.includes(c) && sum.readyCounts[c] > 0);
       let c: CropId | undefined;
@@ -745,6 +939,9 @@ export class Game {
         roll: 'Roll right after seeding', weed: 'Only young crops can be weeded', spray: 'No growing crop to spray',
       };
       return { ok: false, reason: reasons[op], cells: 0 };
+    }
+    if (op === 'seed' && crop && !this.canPlant(crop)) {
+      return { ok: false, reason: `${CROP_DEFS[crop].name} is planted in ${plantWindow(crop)}`, cells: n };
     }
     const cost = op === 'seed' ? (crop ? CROP_DEFS[crop].seedCostPerCell : 0) : OP_DEFS[op].costPerCell ?? 0;
     if (cost > 0 && this.money < cost * Math.min(n, 20)) {
@@ -779,18 +976,26 @@ export class Game {
       for (let i = 0; i < field.cells.length; i++) if (this.eligible(field, i, op)) min = Math.min(min, field.fert[i]);
       level = min + 1;
     }
-    v.steps = [...pre, { t: 'work', op, fieldId, crop: check.crop, level }, { t: 'park' }];
+    v.steps = [...this.fuelSteps(v), ...pre, { t: 'work', op, fieldId, crop: check.crop, level }, { t: 'park' }];
     return null;
   }
 
   /** What a field needs right now, most important first. Only jobs that are possible now. */
   fieldNeeds(f: Field): Need[] {
-    const s = f.summary(this.clock);
+    const s = f.summary(this.growth);
     const pct = (n: number) => Math.round((n / s.total) * 100);
     const needs: Need[] = [];
     const can = (op: Op) => this.eligibleCount(f, op) > 0;
-    if (s.ready) needs.push({ op: 'harvest', priority: 100, why: `${pct(s.ready)}% is ripe and ready` });
-    if (can('seed')) needs.push({ op: 'seed', priority: 90, why: 'Plowed and ready to plant' });
+    if (s.ready) {
+      const storm = this.weather === 'storm' || this.weatherNext === 'storm' ? ' — storm coming!' : '';
+      const wet = this.tooWet ? ' — too wet to cut right now' : '';
+      needs.push({ op: 'harvest', priority: 100, why: `${pct(s.ready)}% is ripe and ready${wet || storm}` });
+    }
+    if (can('seed')) {
+      const any = CROPS.some(c => this.canPlant(c));
+      needs.push(any ? { op: 'seed', priority: 90, why: `Plowed — ${this.seasonName.toLowerCase()} planting` }
+        : { op: 'seed', priority: 30, why: 'Plowed — nothing can be planted in winter' });
+    }
     if (s.weedy && (can('weed') || can('spray'))) {
       const op = can('weed') && this.tools.some(t => t.kind === 'weeder') ? 'weed' : 'spray';
       needs.push({ op, priority: 85, why: `Weeds on ${pct(s.weedy)}% — costing 25% of that harvest` });
@@ -809,8 +1014,8 @@ export class Game {
   /** Picks the best free machine for a job, or explains what's missing. */
   bestVehicleFor(f: Field, op: Op, crop?: CropId): { vehicle?: Vehicle; reason?: string; buy?: VehicleKind | ToolKind } {
     const wantsRoot = op === 'harvest'
-      ? CROPS.some(c => CROP_DEFS[c].root && f.summary(this.clock).readyCounts[c] > 0)
-        && !CROPS.some(c => !CROP_DEFS[c].root && f.summary(this.clock).readyCounts[c] > 0)
+      ? CROPS.some(c => CROP_DEFS[c].root && f.summary(this.growth).readyCounts[c] > 0)
+        && !CROPS.some(c => !CROP_DEFS[c].root && f.summary(this.growth).readyCounts[c] > 0)
       : false;
     const kind: VehicleKind = op === 'harvest' ? (wantsRoot ? 'rootHarvester' : 'combine') : 'tractor';
     const fleet = this.vehicles.filter(v => v.kind === kind);
@@ -843,7 +1048,7 @@ export class Game {
     if (typeof tools === 'string') return tools;
     this.cancel(t);
     const hitch = this.ensureTool(t, 'wagon', true) as Step[];
-    t.steps = [...pre, ...hitch, { t: 'follow', combineId: c.id }, ...this.deliverSteps(this.deliverTo), { t: 'park' }];
+    t.steps = [...this.fuelSteps(t, 0.12), ...pre, ...hitch, { t: 'follow', combineId: c.id }, ...this.deliverSteps(this.deliverTo), { t: 'park' }];
     return null;
   }
 
@@ -869,9 +1074,305 @@ export class Game {
     const cur = v && this.toolOf(v);
     if (!v || !cur) return 'No tool attached';
     this.cancel(v);
-    const p = this.attachPoint(cur);
+    const p = this.homePoint(cur);
     v.steps = [{ t: 'goto', x: p.x, y: p.y }, { t: 'detach' }, { t: 'park' }];
     return null;
+  }
+
+  /** Rough seconds, wages and fuel for a hired worker to do a job. */
+  estimateJob(v: Vehicle, field: Field, op: Op, crop?: CropId) {
+    const cells = this.eligibleCount(field, op, crop);
+    let width = this.workWidth(v);
+    if (v.kind === 'tractor') {
+      const kind = toolForOp(op, crop);
+      if (kind) width = this.toolWidth(kind);
+    }
+    const factor = isHarvester(v) ? COMBINE_WORK_FACTOR : WORK_SPEED_FACTOR;
+    const speed = this.speedOf(v) * factor;
+    const secs = (cells / Math.max(1, width)) / speed * 1.3 + dist(v, field.center) / this.speedOf(v) * 2;
+    return { secs, wage: secs * WAGE_PER_SEC, fuel: secs * FUEL_USE.work * FUEL_PRICE };
+  }
+
+  repair(vid: number): string | null {
+    const v = this.vehicle(vid);
+    if (!v) return 'Not available';
+    const cost = this.repairCost(v);
+    if (cost <= 0) return 'Already in top shape';
+    if (this.money < cost) return 'Not enough money';
+    this.spend('repairs', cost);
+    v.condition = 100;
+    return null;
+  }
+
+  borrow(): string | null {
+    if (this.loan + LOAN_STEP > LOAN_MAX) return 'The bank won\u2019t lend more';
+    this.loan += LOAN_STEP;
+    this.money += LOAN_STEP;
+    return null;
+  }
+
+  repay(): string | null {
+    if (this.loan <= 0) return 'No loan to repay';
+    const amt = Math.min(LOAN_STEP, this.loan);
+    if (this.money < amt) return 'Not enough money';
+    this.loan -= amt;
+    this.money -= amt;
+    return null;
+  }
+
+  // ---------- driving ----------
+
+  startDriving(vid: number): string | null {
+    const v = this.vehicle(vid);
+    if (!v) return 'Not available';
+    if (this.drivenId != null) this.stopDriving();
+    this.cancel(v);
+    this.drivenId = v.id;
+    v.speed = 0;
+    this.implDown = false;
+    this.input = { steer: 0, throttle: 0 };
+    this.lastWork = null;
+    this.events.emit('drive', v.id);
+    return null;
+  }
+
+  stopDriving() {
+    const v = this.driven;
+    this.drivenId = null;
+    this.implDown = false;
+    this.input = { steer: 0, throttle: 0 };
+    if (v) { v.speed = 0; v.steps = v.steps.filter(st => st.t !== 'unload' && st.t !== 'refuel'); }
+    this.events.emit('drive', null);
+  }
+
+  setDriveInput(steer: number, throttle: number) {
+    this.input.steer = Math.max(-1, Math.min(1, steer));
+    this.input.throttle = Math.max(-1, Math.min(1, throttle));
+  }
+
+  /** The job the driven machine does when its implement is lowered. */
+  driveOp(v: Vehicle): Op | null {
+    if (isHarvester(v)) return 'harvest';
+    const t = this.toolOf(v);
+    switch (t?.kind) {
+      case 'plow': return 'plow';
+      case 'seeder': case 'planter': return 'seed';
+      case 'spreader': return this.driveSpread;
+      case 'roller': return 'roll';
+      case 'weeder': return 'weed';
+      case 'sprayer': return 'spray';
+      default: return null;
+    }
+  }
+
+  /** The seed crop the driven seeder will plant, matched to seeder vs root planter. */
+  private driveSeedCrop(v: Vehicle): CropId {
+    const root = this.toolOf(v)?.kind === 'planter';
+    if (!!CROP_DEFS[this.driveCrop].root === root) return this.driveCrop;
+    return CROPS.find(c => !!CROP_DEFS[c].root === root && this.canPlant(c)) ?? CROPS.find(c => !!CROP_DEFS[c].root === root)!;
+  }
+
+  /** Lowers or raises the implement; returns a reason when it can't be lowered. */
+  toggleImplement(): string | null {
+    const v = this.driven;
+    if (!v) return 'Not driving';
+    if (this.implDown) { this.implDown = false; this.driveTouched.clear(); return null; }
+    const op = this.driveOp(v);
+    if (!op) return isHarvester(v) ? null : this.toolOf(v) ? 'The wagon has nothing to lower' : 'Hitch a tool first';
+    if (op === 'seed') {
+      const crop = this.driveSeedCrop(v);
+      if (!this.canPlant(crop)) return `${CROP_DEFS[crop].name} is planted in ${plantWindow(crop)}`;
+      this.driveCrop = crop;
+    }
+    if (op === 'harvest' && this.tooWet) return 'The crop is too wet to harvest — wait for the sun';
+    this.implDown = true;
+    this.driveTouched.clear();
+    this.lastWork = null;
+    return null;
+  }
+
+  driveContext(): DriveContext | null {
+    const v = this.driven;
+    if (!v) return null;
+    const op = this.driveOp(v);
+    const cargo = this.cargoOf(v);
+    const near = (p: Pt, r: number) => dist(v, p) < r;
+    let unload: Dest | null = null;
+    if (cargo && cargo.cargo.amount > 0) unload = near(SELL_UNLOAD, 5) ? 'sell' : near(SILO_UNLOAD, 4) ? 'silo' : null;
+    const tool = this.toolOf(v);
+    const nearTool = v.kind === 'tractor' && !tool ? this.hitchableTool(v) : undefined;
+    let opLabel = op ? OP_DEFS[op].name : '';
+    if (op === 'seed') opLabel = `Plant ${CROP_DEFS[this.driveSeedCrop(v)].name.toLowerCase()}`;
+    return {
+      op, opLabel, lowered: this.implDown,
+      unload,
+      refuel: near(PUMP, 3.2) && v.fuel < FUEL_CAP[v.kind] - 1,
+      hitch: tool && v.kind === 'tractor' ? 'unhitch' : nearTool ? 'hitch' : null,
+      hitchName: tool ? TOOL_NAMES[tool.kind] : nearTool ? TOOL_NAMES[nearTool.kind] : '',
+    };
+  }
+
+  private hitchableTool(v: Vehicle): Tool | undefined {
+    const hx = v.x - Math.cos(v.heading) * HITCH_OFFSET;
+    const hy = v.y - Math.sin(v.heading) * HITCH_OFFSET;
+    let best: Tool | undefined, bestD = 1.8;
+    for (const t of this.tools) {
+      if (t.attachedTo != null || (t.reservedBy != null && t.reservedBy !== v.id)) continue;
+      const half = TOOL_LEN[t.kind] / 2;
+      const d = Math.hypot(t.x + Math.cos(t.heading) * half - hx, t.y + Math.sin(t.heading) * half - hy);
+      if (d < bestD) { best = t; bestD = d; }
+    }
+    return best;
+  }
+
+  /** Hitch the tool behind you, or drop the one you're pulling right where it is. */
+  driverHitch(): string | null {
+    const v = this.driven;
+    if (!v || v.kind !== 'tractor') return 'Only tractors pull tools';
+    const cur = this.toolOf(v);
+    if (cur) {
+      cur.attachedTo = null;
+      v.toolId = null;
+      this.implDown = false;
+      return null;
+    }
+    const t = this.hitchableTool(v);
+    if (!t) return 'Back up to a tool to hitch it';
+    t.attachedTo = v.id;
+    t.reservedBy = null;
+    v.toolId = t.id;
+    return null;
+  }
+
+  driverUnload(): string | null {
+    const v = this.driven;
+    const dest = this.driveContext()?.unload;
+    if (!v || !dest) return 'Drive to the sell point or the silo';
+    this.implDown = false;
+    v.speed = 0;
+    v.steps = [{ t: 'unload', dest }];
+    return null;
+  }
+
+  driverRefuel(): string | null {
+    const v = this.driven;
+    if (!v || !this.driveContext()?.refuel) return 'Drive to the fuel pump';
+    v.speed = 0;
+    v.steps = [{ t: 'refuel' }];
+    return null;
+  }
+
+  private updateDriven(v: Vehicle, dt: number) {
+    const step = v.steps[0];
+    if (step?.t === 'unload') { this.stepUnload(v, step, dt); return; }
+    if (step?.t === 'refuel') { this.stepRefuel(v, dt); return; }
+    v.steps = [];
+    const op = this.implDown ? this.driveOp(v) : null;
+    const factor = isHarvester(v) ? COMBINE_WORK_FACTOR : WORK_SPEED_FACTOR;
+    const maxF = this.speedOf(v) * (op ? factor * 1.25 : 1.3);
+    const maxR = 1.6 * this.healthFactor(v);
+    const th = this.input.throttle;
+    const target = th >= 0 ? th * maxF : th * maxR;
+    const braking = Math.sign(target) !== Math.sign(v.speed) && Math.abs(v.speed) > 0.05;
+    const rate = (braking ? 7 : 2.6) * dt;
+    v.speed += Math.max(-rate, Math.min(rate, target - v.speed));
+    if (th === 0 && Math.abs(v.speed) < 0.05) v.speed = 0;
+    const wheelbase = isHarvester(v) ? 1.9 : 1.35;
+    v.heading += (v.speed * Math.tan(this.input.steer * 0.6) / wheelbase) * dt;
+    v.heading = Math.atan2(Math.sin(v.heading), Math.cos(v.heading));
+    v.x = Math.max(1, Math.min(MAP_W - 1, v.x + Math.cos(v.heading) * v.speed * dt));
+    v.y = Math.max(1, Math.min(MAP_H - 1, v.y + Math.sin(v.heading) * v.speed * dt));
+    v.moving = Math.abs(v.speed) > 0.05;
+    v.status = op ? `${OP_DEFS[op].verb} · you're driving` : "You're driving";
+    this.driverGrain(v, dt);
+    if (op) this.driveWork(v, op);
+    else this.lastWork = null;
+  }
+
+  /** A wagon you drive alongside a harvester takes its grain. */
+  private driverGrain(v: Vehicle, dt: number) {
+    const wagon = this.toolOf(v);
+    if (wagon?.kind !== 'wagon') return;
+    const cap = WAGON_CAP[this.upgrades.wagon];
+    for (const c of this.vehicles) {
+      if (!isHarvester(c) || c.tank.amount <= 0 || dist(this.unloadSpot(c), v) > 1.6) continue;
+      if (wagon.load.amount > 0 && wagon.load.crop !== c.tank.crop) continue;
+      const amt = Math.min(UNLOAD_RATE * dt, c.tank.amount, cap - wagon.load.amount);
+      if (amt <= 0) return;
+      wagon.load.crop = c.tank.crop;
+      wagon.load.amount += amt;
+      c.tank.amount -= amt;
+      if (c.tank.amount <= 0.01) { c.tank.amount = 0; c.tank.crop = null; }
+      c.unloadingTo = v.id;
+      v.status = `Taking grain from ${c.name} · ${Math.round((wagon.load.amount / cap) * 100)}%`;
+      return;
+    }
+  }
+
+  /** Works every field cell under the implement between last frame and this one. */
+  private driveWork(v: Vehicle, op: Op) {
+    const tool = this.toolOf(v);
+    let px: number, py: number, h: number;
+    if (isHarvester(v) || !tool) {
+      px = v.x + Math.cos(v.heading) * HEADER_OFFSET; py = v.y + Math.sin(v.heading) * HEADER_OFFSET; h = v.heading;
+    } else {
+      px = tool.x; py = tool.y; h = tool.heading;
+    }
+    const prev = this.lastWork;
+    this.lastWork = { x: px, y: py };
+    if (!prev || v.speed <= 0.05) return;
+    v.working = op;
+    if (op === 'harvest' && this.tooWet) {
+      v.status = 'Too wet to harvest — raise the header and wait';
+      return;
+    }
+    const width = this.workWidth(v);
+    const nx = -Math.sin(h), ny = Math.cos(h);
+    const len = Math.hypot(px - prev.x, py - prev.y);
+    const steps = Math.max(1, Math.ceil(len / 0.4));
+    const seen = new Set<number>();
+    const crop = op === 'seed' ? this.driveSeedCrop(v) : undefined;
+    for (let k = 1; k <= steps; k++) {
+      const cx = prev.x + (px - prev.x) * (k / steps);
+      const cy = prev.y + (py - prev.y) * (k / steps);
+      for (let o = -width / 2 + 0.25; o < width / 2; o += 0.5) {
+        const x = Math.floor(cx + nx * o), y = Math.floor(cy + ny * o);
+        const key = y * MAP_W + x;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const fid = this.world.fieldIdAt(x, y);
+        const field = fid > 0 ? this.world.fields.get(fid) : undefined;
+        if (!field) continue;
+        const i = this.world.fieldCellIdx[key];
+        if (!this.driveCell(v, op, field, i, key, crop)) return;
+      }
+    }
+  }
+
+  /** Returns false when the machine must stop (tank full, no money). */
+  private driveCell(v: Vehicle, op: Op, field: Field, i: number, key: number, crop?: CropId): boolean {
+    if (op === 'fertilize' && this.driveTouched.has(key)) return true;
+    let c = crop;
+    if (op === 'harvest') {
+      const here = field.cropAt(i);
+      if (!here || !!CROP_DEFS[here].root !== (v.kind === 'rootHarvester')) return true;
+      if (v.tank.amount > 0 && v.tank.crop !== here) return true;
+      c = here;
+    }
+    if (!this.eligible(field, i, op, c)) return true;
+    if (op === 'harvest') {
+      const cargo = this.cargoOf(v)!;
+      if (cargo.cap - cargo.cargo.amount < CROP_DEFS[c!].yieldPerCell * 1.6) {
+        this.implDown = false;
+        this.events.emit('toast', `${v.name}'s tank is full — unload into a wagon or at the sell point`, 'bad');
+        return false;
+      }
+    }
+    const step: Extract<Step, { t: 'work' }> = { t: 'work', op, fieldId: field.id, crop: c };
+    if (!this.applyCell(v, step, field, i)) { this.implDown = false; return false; }
+    if (op === 'fertilize') this.driveTouched.add(key);
+    this.stats.drivenCells++;
+    return true;
   }
 
   // ---------- fields ----------
@@ -940,7 +1441,7 @@ export class Game {
     const amt = this.silo[crop];
     if (amt <= 0) return 0;
     const earned = (amt / 1000) * this.prices[crop];
-    this.money += earned;
+    this.earn(earned);
     this.silo[crop] = 0;
     this.stats.soldLiters += amt;
     this.stats.earned += earned;
@@ -968,7 +1469,8 @@ export class Game {
       fields: [...this.world.fields.values()].map(f => f.save()),
       vehicles: this.vehicles.map(v => ({
         id: v.id, kind: v.kind, name: v.name, x: v.x, y: v.y, heading: v.heading, slot: v.slot,
-        toolId: v.toolId, tank: v.tank, steps: cleanSteps(v.steps), autoUnload: v.autoUnload,
+        toolId: v.toolId, tank: v.tank, steps: this.isDriven(v) ? [] : cleanSteps(v.steps), autoUnload: v.autoUnload,
+        fuel: v.fuel, condition: v.condition,
       })),
       tools: this.tools,
       silo: this.silo,
@@ -982,6 +1484,12 @@ export class Game {
       weather: this.weather,
       weatherNext: this.weatherNext,
       weatherChangeAt: this.weatherChangeAt,
+      growth: this.growth,
+      wetness: this.wetness,
+      loan: this.loan,
+      ledger: this.ledger,
+      driveCrop: this.driveCrop,
+      driveSpread: this.driveSpread,
       nextId: this.nextId,
       nextFieldId: this.nextFieldId,
     };
@@ -994,7 +1502,10 @@ export class Game {
     g.speedIdx = data.speedIdx ?? 0;
     g.owned = new Set(data.owned);
     for (const fs of data.fields as FieldSave[]) g.world.addField(Field.load(fs));
-    g.vehicles = data.vehicles.map(v => ({ ...v, status: 'Idle', moving: false, working: null, unloadingTo: null, waiting: false }));
+    g.vehicles = data.vehicles.map(v => ({
+      ...v, fuel: v.fuel ?? FUEL_CAP[v.kind], condition: v.condition ?? 100,
+      status: 'Idle', moving: false, working: null, unloadingTo: null, waiting: false, speed: 0,
+    }));
     g.tools = data.tools;
     // Older saves know fewer crops; keep defaults for the new ones.
     g.silo = { ...g.silo, ...data.silo };
@@ -1013,6 +1524,13 @@ export class Game {
     } else {
       g.weatherChangeAt = data.clock + 5 * 60;
     }
+    // Before seasons, crops grew on the plain clock.
+    g.growth = data.growth ?? data.clock;
+    g.wetness = data.wetness ?? 0;
+    g.loan = data.loan ?? 0;
+    if (data.ledger) g.ledger = data.ledger;
+    if (data.driveCrop) g.driveCrop = data.driveCrop;
+    if (data.driveSpread) g.driveSpread = data.driveSpread;
     g.nextId = data.nextId;
     g.nextFieldId = data.nextFieldId;
 
@@ -1020,6 +1538,7 @@ export class Game {
     const elapsedSec = Math.max(0, (Date.now() - data.savedAt) / 1000);
     const minutes = Math.min(elapsedSec * GAME_MIN_PER_SEC * OFFLINE_RATE, OFFLINE_CAP_MIN);
     const startDay = g.day;
+    g.growth += growthBetween(g.clock, g.clock + minutes);
     g.clock += minutes;
     const days = g.day - startDay;
     for (let d = 0; d < days; d++) g.newDay();

@@ -9,13 +9,14 @@ export interface Stats {
   parcels: number;
   fields: number;
   vehiclesBought: number;
+  drivenCells: number;
   fertilized: number;
   limed: number;
   weeded: number;
 }
 
 export function newStats(): Stats {
-  return { plowed: 0, seeded: 0, harvested: 0, soldLiters: 0, earned: 0, cropsHarvested: [], upgrades: 0, parcels: 1, fields: 0, vehiclesBought: 0, fertilized: 0, limed: 0, weeded: 0 };
+  return { plowed: 0, seeded: 0, harvested: 0, soldLiters: 0, earned: 0, cropsHarvested: [], upgrades: 0, parcels: 1, fields: 0, vehiclesBought: 0, drivenCells: 0, fertilized: 0, limed: 0, weeded: 0 };
 }
 
 export interface Goal {
@@ -31,6 +32,7 @@ export const GOALS: Goal[] = [
   { title: 'Plant a crop', hint: 'Tap the plowed field, then Plant a crop, and pick one.', reward: 400, progress: s => [s.seeded, 60] },
   { title: 'Harvest your crop', hint: 'When the crop turns golden, tap the field and choose Harvest.', reward: 600, progress: s => [s.harvested, 60] },
   { title: 'Sell some grain', hint: 'The tractor hauls grain to the sell point automatically.', reward: 600, progress: s => [Math.min(s.soldLiters, 5000), 5000] },
+  { title: 'Take the wheel', hint: 'Tap a tractor, then Drive. Lower the tool and work 40 cells yourself — no wages.', reward: 1500, progress: s => [Math.min(s.drivenCells, 40), 40] },
   { title: 'Buy more land', hint: 'Tap a locked plot on the map or open the Shop.', reward: 2500, progress: s => [s.parcels - 1, 1] },
   { title: 'Buy an upgrade', hint: 'Shop → Upgrades makes your machines wider and faster.', reward: 1500, progress: s => [s.upgrades, 1] },
   { title: 'Harvest 4 different crops', hint: 'Try barley, oats, canola or sunflowers — each has its own price.', reward: 3000, progress: s => [s.cropsHarvested.length, 4] },

@@ -1,5 +1,5 @@
 import {
-  CROPS, CROP_DEFS, FERT_BONUS, LIME_HARVESTS, LIME_PENALTY, MINUTES_PER_DAY, ROLL_BONUS, WEED_PENALTY, emptyCropRecord,
+  CROPS, CROP_DEFS, FERT_BONUS, LIME_HARVESTS, LIME_PENALTY, MINUTES_PER_DAY, ROLL_BONUS, STORM_YIELD, WEED_PENALTY, emptyCropRecord,
   type CropId,
 } from './config';
 import type { Axis } from './coverage';
@@ -24,6 +24,7 @@ export interface FieldSave {
   rolled?: number[];
   weeds?: number[];
   lime?: number[];
+  damaged?: number[];
 }
 
 export class Field {
@@ -38,6 +39,7 @@ export class Field {
   readonly rolled: Uint8Array;
   readonly weeds: Uint8Array;
   readonly lime: Uint8Array; // harvests left before the soil needs lime
+  readonly damaged: Uint8Array; // flattened by a storm
   readonly center: Pt;
 
   constructor(id: number, poly: Pt[], cells: Pt[], axis?: Axis) {
@@ -56,6 +58,7 @@ export class Field {
     this.rolled = new Uint8Array(cells.length);
     this.weeds = new Uint8Array(cells.length);
     this.lime = new Uint8Array(cells.length).fill(LIME_HARVESTS - 1);
+    this.damaged = new Uint8Array(cells.length);
     this.center = centroid(poly);
   }
 
@@ -82,6 +85,7 @@ export class Field {
     if (this.lime[i] === 0) f -= LIME_PENALTY;
     if (this.rolled[i]) f += ROLL_BONUS;
     if (this.weeds[i] === Weeds.Present) f -= WEED_PENALTY;
+    if (this.damaged[i]) f *= STORM_YIELD;
     return Math.max(0.3, f);
   }
 
@@ -90,21 +94,23 @@ export class Field {
     this.fert[i] = 0;
     this.rolled[i] = 0;
     this.weeds[i] = Weeds.None;
+    this.damaged[i] = 0;
   }
 
   cropAt(i: number): CropId | null {
     return this.crop[i] >= 0 ? CROPS[this.crop[i]] : null;
   }
 
-  /** Summary used by the UI. */
+  /** Summary used by the UI. `clock` is the growth clock, which pauses in winter. */
   summary(clock: number) {
     let grass = 0, plowed = 0, growing = 0, ready = 0, stubble = 0, progress = 0;
-    let fert = 0, needLime = 0, weedy = 0, rolled = 0, yieldSum = 0;
+    let fert = 0, needLime = 0, weedy = 0, rolled = 0, yieldSum = 0, damaged = 0;
     for (let i = 0; i < this.cells.length; i++) {
       fert += this.fert[i];
       if (this.lime[i] === 0) needLime++;
       if (this.weeds[i] === Weeds.Present) weedy++;
       if (this.rolled[i]) rolled++;
+      if (this.damaged[i]) damaged++;
       yieldSum += this.yieldFactor(i);
     }
     const cropCounts = emptyCropRecord(() => 0);
@@ -127,7 +133,7 @@ export class Field {
       total: this.cells.length, grass, plowed, growing, ready, stubble,
       growthPct: growing ? Math.round((progress / growing) * 100) : 0,
       cropCounts, readyCounts,
-      fertAvg: fert / this.cells.length, needLime, weedy, rolled,
+      fertAvg: fert / this.cells.length, needLime, weedy, rolled, damaged,
       yieldPct: Math.round((yieldSum / this.cells.length) * 100),
     };
   }
@@ -145,6 +151,7 @@ export class Field {
       rolled: Array.from(this.rolled),
       weeds: Array.from(this.weeds),
       lime: Array.from(this.lime),
+      damaged: Array.from(this.damaged),
     };
   }
 
@@ -159,6 +166,7 @@ export class Field {
     if (s.rolled) f.rolled.set(s.rolled);
     if (s.weeds) f.weeds.set(s.weeds);
     if (s.lime) f.lime.set(s.lime);
+    if (s.damaged) f.damaged.set(s.damaged);
     return f;
   }
 }

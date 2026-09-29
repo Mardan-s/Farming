@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { MINUTES_PER_DAY } from '../src/game/config';
+import { FUEL_CAP, MINUTES_PER_DAY, SEASON_DAYS, WET_LIMIT } from '../src/game/config';
 import { planPasses } from '../src/game/coverage';
 import { CellState } from '../src/game/field';
 import { isSimplePolygon, rasterize } from '../src/game/geometry';
-import { Game } from '../src/game/sim';
+import { Game, growthBetween, seasonAt } from '../src/game/sim';
 
 const SQUARE = [{ x: 16, y: 45 }, { x: 28, y: 45 }, { x: 28, y: 55 }, { x: 16, y: 55 }];
 
-function run(game: Game, seconds: number, until?: () => boolean) {
+/** Runs the sim in fair weather so random rain and storms don't make tests flaky. */
+function run(game: Game, seconds: number, until?: () => boolean, fair = true) {
   for (let t = 0; t < seconds; t += 0.05) {
+    if (fair) { game.weather = 'sun'; game.weatherNext = 'sun'; game.wetness = 0; }
     game.update(0.05);
     if (until?.()) return true;
   }
@@ -68,7 +70,7 @@ describe('full farming loop', () => {
 
     // Let the crop ripen, and bring the tractor home.
     run(game, 60, () => game.isIdle(tractor) && tractor.steps.length === 0);
-    game.clock += 3 * MINUTES_PER_DAY;
+    game.growth += 3 * MINUTES_PER_DAY;
     expect(game.checkFieldOp(combine, field, 'harvest').ok).toBe(true);
 
     const earnedBefore = game.stats.earned;
@@ -138,7 +140,7 @@ describe('field care', () => {
     // Soil still limed (2 harvests left), fertilized x2, rolled, weed-free: 1 + 0.3 + 0.05.
     expect(f.yieldFactor(0)).toBeCloseTo(1.35);
 
-    game.clock += 3 * MINUTES_PER_DAY;
+    game.growth += 3 * MINUTES_PER_DAY;
     expect(game.orderFieldOp(combine.id, f.id, 'harvest')).toBeNull();
     run(game, 1500, () => game.eligibleCount(f, 'harvest', 'wheat') === 0 && combine.tank.amount === 0 && tractor.steps.length === 0);
     expect(game.stats.soldLiters).toBeCloseTo(120 * 95 * 1.35, 0);
@@ -150,8 +152,8 @@ describe('field care', () => {
   it('weeds appear in unprotected crops and cost yield', () => {
     const game = new Game();
     const f = readyField(game);
-    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 0; f.planted[i] = game.clock; }
-    game.clock += 1.2 * MINUTES_PER_DAY; // past growth stage 2 for wheat
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 0; f.planted[i] = game.growth; }
+    game.growth += 1.2 * MINUTES_PER_DAY; // past growth stage 2 for wheat
     run(game, 1.2);
     const weedy = f.cells.filter((_, i) => f.weeds[i] === 1).length;
     expect(weedy).toBeGreaterThan(f.cells.length * 0.4);
@@ -171,7 +173,7 @@ describe('field care', () => {
     expect(game.orderFieldOp(tractor.id, f.id, 'seed', 'potato')).toBeNull();
     run(game, 900, () => game.eligibleCount(f, 'seed') === 0);
     expect(game.toolOf(tractor)?.kind).toBe('planter');
-    game.clock += 4 * MINUTES_PER_DAY;
+    game.growth += 4 * MINUTES_PER_DAY;
     expect(game.checkFieldOp(combine, f, 'harvest').reason).toMatch(/root harvester/);
     game.buyItem('rootHarvester');
     const rh = game.vehicles.find(v => v.kind === 'rootHarvester')!;
@@ -219,8 +221,155 @@ describe('field to-do list', () => {
     expect(game.fieldNeeds(f)[0].op).toBe('seed');
     expect(game.bestVehicleFor(f, 'fertilize').buy).toBe('spreader');
     expect(game.bestVehicleFor(f, 'seed', 'potato').buy).toBe('planter');
-    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 7; f.planted[i] = game.clock - 5 * MINUTES_PER_DAY; }
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 7; f.planted[i] = game.growth - 5 * MINUTES_PER_DAY; }
     expect(game.fieldNeeds(f)[0].op).toBe('harvest');
     expect(game.bestVehicleFor(f, 'harvest').buy).toBe('rootHarvester');
+  });
+});
+
+describe('seasons', () => {
+  it('cycles through the seasons and pauses growth in winter', () => {
+    expect(seasonAt(0)).toBe('spring');
+    expect(seasonAt(SEASON_DAYS * MINUTES_PER_DAY)).toBe('summer');
+    const winter = 3 * SEASON_DAYS * MINUTES_PER_DAY;
+    expect(seasonAt(winter)).toBe('winter');
+    expect(growthBetween(winter, winter + MINUTES_PER_DAY)).toBe(0);
+    expect(growthBetween(0, MINUTES_PER_DAY)).toBe(MINUTES_PER_DAY);
+  });
+
+  it('only plants crops in their season', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    const tractor = game.vehicles[0];
+    f.state.fill(1);
+    game.clock = SEASON_DAYS * MINUTES_PER_DAY + 600; // summer
+    expect(game.orderFieldOp(tractor.id, f.id, 'seed', 'wheat')).toMatch(/Spring or Autumn/);
+    expect(game.orderFieldOp(tractor.id, f.id, 'seed', 'corn')).toBeNull();
+  });
+});
+
+describe('weather that matters', () => {
+  it('rain wets the crop and stops the combine until it dries', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 0; f.planted[i] = game.growth - 3 * MINUTES_PER_DAY; }
+    const combine = game.vehicles[1];
+    game.weather = 'rain';
+    game.weatherChangeAt = game.clock + 1e6;
+    for (let t = 0; t < 150; t++) game.update(0.1);
+    expect(game.wetness).toBeGreaterThan(WET_LIMIT);
+    expect(game.orderFieldOp(combine.id, f.id, 'harvest')).toBeNull();
+    run(game, 60, undefined, false);
+    expect(combine.status).toMatch(/wet/);
+    expect(game.eligibleCount(f, 'harvest')).toBe(f.cells.length);
+    // Sun dries it out and the harvest starts.
+    run(game, 120, () => game.eligibleCount(f, 'harvest') < f.cells.length);
+    expect(game.eligibleCount(f, 'harvest')).toBeLessThan(f.cells.length);
+  });
+
+  it('storms flatten ripe crops left in the field', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 0; f.planted[i] = game.growth - 4 * MINUTES_PER_DAY; }
+    const before = f.yieldFactor(0);
+    game.weather = 'storm';
+    game.weatherChangeAt = game.clock + 1e6;
+    for (let t = 0; t < 60; t++) game.update(0.1);
+    expect(f.summary(game.growth).damaged).toBeGreaterThan(0);
+    const hit = f.damaged.indexOf(1);
+    expect(f.yieldFactor(hit)).toBeLessThan(before);
+  });
+});
+
+describe('running costs', () => {
+  it('burns fuel, wears machines and pays wages while working', () => {
+    const game = new Game();
+    game.money = 50000;
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    const tractor = game.vehicles[0];
+    expect(game.orderFieldOp(tractor.id, f.id, 'plow')).toBeNull();
+    run(game, 60);
+    expect(tractor.fuel).toBeLessThan(FUEL_CAP.tractor);
+    expect(tractor.condition).toBeLessThan(100);
+    expect(game.ledger.today.wages).toBeGreaterThan(0);
+    const cost = game.repairCost(tractor);
+    expect(cost).toBeGreaterThan(0);
+    expect(game.repair(tractor.id)).toBeNull();
+    expect(tractor.condition).toBe(100);
+  });
+
+  it('refuels at the pump before a job when the tank is low', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    const tractor = game.vehicles[0];
+    tractor.fuel = 10;
+    expect(game.orderFieldOp(tractor.id, f.id, 'plow')).toBeNull();
+    expect(tractor.steps[1].t).toBe('refuel');
+    run(game, 60, () => tractor.fuel >= FUEL_CAP.tractor);
+    expect(tractor.fuel).toBeGreaterThan(FUEL_CAP.tractor * 0.95);
+    expect(game.ledger.today.fuel).toBeGreaterThan(0);
+  });
+
+  it('lends money and charges daily interest', () => {
+    const game = new Game();
+    const m = game.money;
+    expect(game.borrow()).toBeNull();
+    expect(game.money).toBe(m + 10000);
+    game.clock = MINUTES_PER_DAY - 0.1;
+    game.update(0.05);
+    expect(game.ledger.yesterday.interest + game.ledger.today.interest).toBeGreaterThan(0);
+    expect(game.repay()).toBeNull();
+    expect(game.loan).toBe(0);
+  });
+});
+
+describe('driving yourself', () => {
+  it('steers, plows under the tool, and pays no wages', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    const tractor = game.vehicles[0];
+    const plow = game.tools.find(t => t.kind === 'plow')!;
+    // Put the tractor on the field with the plow behind it.
+    expect(game.startDriving(tractor.id)).toBeNull();
+    tractor.x = 18; tractor.y = 50; tractor.heading = 0;
+    plow.x = 18 - 0.8 - 0.55; plow.y = 50; plow.heading = 0;
+    expect(game.driveContext()!.hitch).toBe('hitch');
+    expect(game.driverHitch()).toBeNull();
+    expect(game.toolOf(tractor)?.kind).toBe('plow');
+    expect(game.toggleImplement()).toBeNull();
+    game.setDriveInput(0, 1);
+    run(game, 3);
+    expect(tractor.x).toBeGreaterThan(20);
+    expect(game.stats.drivenCells).toBeGreaterThan(5);
+    expect(game.eligibleCount(f, 'plow')).toBeLessThan(f.cells.length);
+    expect(game.ledger.today.wages).toBe(0);
+    // Steering turns the tractor.
+    game.setDriveInput(1, 1);
+    run(game, 1);
+    expect(tractor.heading).toBeGreaterThan(0.2);
+    // Drop the plow where it is; the AI can fetch it from there later.
+    game.setDriveInput(0, 0);
+    expect(game.driverHitch()).toBeNull();
+    expect(plow.attachedTo).toBeNull();
+    game.stopDriving();
+    expect(game.isIdle(tractor)).toBe(true);
+    expect(game.orderFieldOp(tractor.id, f.id, 'plow')).toBeNull();
+    run(game, 400, () => game.toolOf(tractor)?.kind === 'plow');
+    expect(game.toolOf(tractor)?.kind).toBe('plow');
+  });
+
+  it('a driven vehicle is not dispatched by the AI', () => {
+    const game = new Game();
+    const tractor = game.vehicles[0];
+    game.startDriving(tractor.id);
+    expect(game.isIdle(tractor)).toBe(false);
+    game.orderPark(tractor.id);
+    expect(game.drivenId).toBeNull();
   });
 });
