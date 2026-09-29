@@ -46,8 +46,9 @@ export const SPEEDS = [1, 2, 5];
 export const OFFLINE_RATE = 0.25; // fraction of 1x speed while the app is closed
 export const OFFLINE_CAP_MIN = 2 * MINUTES_PER_DAY;
 
-export type CropId = 'wheat' | 'corn' | 'soy';
-export const CROPS: CropId[] = ['wheat', 'corn', 'soy'];
+// Order matters: saves store crops by index, so only append new crops.
+export type CropId = 'wheat' | 'corn' | 'soy' | 'barley' | 'oats' | 'canola' | 'sunflower';
+export const CROPS: CropId[] = ['wheat', 'corn', 'soy', 'barley', 'oats', 'canola', 'sunflower'];
 
 export interface CropDef {
   name: string;
@@ -57,13 +58,35 @@ export interface CropDef {
   seedCostPerCell: number; // $
   basePrice: number; // $ per 1000 L
   color: number; // grain color
+  /** 3D look: dense grain carpet or distinct rows, height in cells, and colors per growth stage. */
+  look: {
+    style: 'grain' | 'row';
+    height: number;
+    stages: [number, number, number, number]; // sprout, young, mature (or flowering), ripe
+    stalks?: boolean; // leaves tall stalk stubble after harvest
+  };
 }
 
 export const CROP_DEFS: Record<CropId, CropDef> = {
-  wheat: { name: 'Wheat', icon: '🌾', growDays: 2, yieldPerCell: 95, seedCostPerCell: 4, basePrice: 330, color: 0xe2bf5a },
-  corn: { name: 'Corn', icon: '🌽', growDays: 3, yieldPerCell: 130, seedCostPerCell: 6, basePrice: 300, color: 0xf2c230 },
-  soy: { name: 'Soybeans', icon: '🫘', growDays: 2.5, yieldPerCell: 72, seedCostPerCell: 5, basePrice: 520, color: 0xc9a86a },
+  wheat: { name: 'Wheat', icon: '🌾', growDays: 2, yieldPerCell: 95, seedCostPerCell: 4, basePrice: 330, color: 0xe2bf5a,
+    look: { style: 'grain', height: 0.42, stages: [0x9ccf55, 0x80b845, 0x6aa33a, 0xe3bd4f] } },
+  corn: { name: 'Corn', icon: '🌽', growDays: 3, yieldPerCell: 130, seedCostPerCell: 6, basePrice: 300, color: 0xf2c230,
+    look: { style: 'row', height: 1.05, stages: [0x62b04a, 0x479f3c, 0x3a8f33, 0xcfb25e], stalks: true } },
+  soy: { name: 'Soybeans', icon: '🫘', growDays: 2.5, yieldPerCell: 72, seedCostPerCell: 5, basePrice: 520, color: 0xc9a86a,
+    look: { style: 'row', height: 0.32, stages: [0x7cc254, 0x62b045, 0x4f9e3b, 0xb88f42] } },
+  barley: { name: 'Barley', icon: '🍺', growDays: 1.75, yieldPerCell: 100, seedCostPerCell: 4, basePrice: 300, color: 0xd9c27e,
+    look: { style: 'grain', height: 0.36, stages: [0xa6d160, 0x93c257, 0x86b456, 0xdcc98a] } },
+  oats: { name: 'Oats', icon: '🥣', growDays: 1.5, yieldPerCell: 80, seedCostPerCell: 3, basePrice: 360, color: 0xe6dcb0,
+    look: { style: 'grain', height: 0.4, stages: [0x93c979, 0x82b86f, 0x77aa6c, 0xe0d6a6] } },
+  canola: { name: 'Canola', icon: '🌼', growDays: 2.75, yieldPerCell: 70, seedCostPerCell: 6, basePrice: 600, color: 0x2e2a20,
+    look: { style: 'grain', height: 0.55, stages: [0x6fb85a, 0x5aa850, 0xf5d62a, 0x6b6a33] } },
+  sunflower: { name: 'Sunflowers', icon: '🌻', growDays: 3.5, yieldPerCell: 75, seedCostPerCell: 6, basePrice: 640, color: 0x3b3328,
+    look: { style: 'row', height: 1.2, stages: [0x6cb44e, 0x4f9f3e, 0xf2c21b, 0x5e4a2a], stalks: true } },
 };
+
+export function emptyCropRecord<T>(value: () => T): Record<CropId, T> {
+  return Object.fromEntries(CROPS.map(c => [c, value()])) as Record<CropId, T>;
+}
 
 export type VehicleKind = 'tractor' | 'combine';
 export type ToolKind = 'plow' | 'seeder' | 'wagon';

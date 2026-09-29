@@ -1,9 +1,8 @@
-import Phaser from 'phaser';
 import './style.css';
 import { unlockAudio } from './audio';
 import { SAVE_KEY } from './game/config';
 import { Game, type OfflineReport } from './game/sim';
-import { GameScene } from './render/GameScene';
+import { View3D } from './render3d/View3D';
 import { UI } from './ui/ui';
 
 function readSave() {
@@ -40,26 +39,7 @@ function reset() {
 }
 
 const ui = new UI(sim, save, reset);
-const dpr = () => Math.min(window.devicePixelRatio || 1, 2.5);
-let ratio = dpr();
-
-const game = new Phaser.Game({
-  type: Phaser.AUTO,
-  parent: 'game',
-  backgroundColor: '#4f8a3a',
-  scale: { mode: Phaser.Scale.NONE, width: window.innerWidth * ratio, height: window.innerHeight * ratio, zoom: 1 / ratio },
-  render: { antialias: true },
-  input: { activePointers: 3 },
-  banner: false,
-});
-game.scene.add('game', GameScene, true, { sim, host: ui, dpr: ratio });
-
-window.addEventListener('resize', () => {
-  ratio = dpr();
-  game.scale.resize(window.innerWidth * ratio, window.innerHeight * ratio);
-  game.scale.setZoom(1 / ratio);
-  (game.scene.getScene('game') as GameScene | null)?.onResize(ratio);
-});
+const view = new View3D(document.getElementById('game')!, sim, ui);
 
 window.addEventListener('pointerdown', unlockAudio, { capture: true });
 window.addEventListener('contextmenu', e => e.preventDefault());
@@ -75,4 +55,4 @@ if (!saved) {
 }
 
 // Handy for debugging from the console and browser tests.
-(window as unknown as { farm: unknown }).farm = { sim, scene: () => game.scene.getScene('game') as GameScene };
+(window as unknown as { farm: unknown }).farm = { sim, view };

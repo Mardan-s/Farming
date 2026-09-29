@@ -30,7 +30,7 @@ export const GOALS: Goal[] = [
   { title: 'Sell some grain', hint: 'The tractor hauls grain to the sell point automatically.', reward: 600, progress: s => [Math.min(s.soldLiters, 5000), 5000] },
   { title: 'Buy more land', hint: 'Tap a locked plot on the map or open the Shop.', reward: 2500, progress: s => [s.parcels - 1, 1] },
   { title: 'Buy an upgrade', hint: 'Shop → Upgrades makes your machines wider and faster.', reward: 1500, progress: s => [s.upgrades, 1] },
-  { title: 'Harvest all three crops', hint: 'Grow wheat, corn and soybeans.', reward: 3000, progress: s => [s.cropsHarvested.length, 3] },
+  { title: 'Harvest 4 different crops', hint: 'Try barley, oats, canola or sunflowers — each has its own price.', reward: 3000, progress: s => [s.cropsHarvested.length, 4] },
   { title: 'Grow your fleet', hint: 'Buy a second tractor or combine to work in parallel.', reward: 4000, progress: s => [s.vehiclesBought, 1] },
   { title: 'Earn $100,000', hint: 'Watch the market — sell when prices are high.', reward: 10000, progress: s => [Math.min(s.earned, 100000), 100000] },
 ];

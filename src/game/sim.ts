@@ -2,7 +2,7 @@ import {
   AUTO_UNLOAD_THRESHOLD, COMBINE_SPEED, COMBINE_WORK_FACTOR, COMBINE_TANK, CROPS, CROP_DEFS, GAME_MIN_PER_SEC, HEADER_OFFSET, HEADER_WIDTH,
   HITCH_OFFSET, MINUTES_PER_DAY, OFFLINE_CAP_MIN, OFFLINE_RATE, PLOW_WIDTH, SEEDER_WIDTH, SELL_UNLOAD, SHOP_ITEMS,
   SILO_CAP, SILO_UNLOAD, SPEEDS, START_MONEY, START_PARCEL, TOOL_LEN, TOOL_SLOTS, TRACTOR_SPEED, UNLOAD_RATE,
-  UPGRADES, VEHICLE_SLOTS, WAGON_CAP, WORK_SPEED_FACTOR, parcelPrice, slotPos,
+  UPGRADES, VEHICLE_SLOTS, WAGON_CAP, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
   type CropId, type ToolKind, type UpgradeId, type VehicleKind,
 } from './config';
 import { planPasses, type Axis } from './coverage';
@@ -94,9 +94,9 @@ export class Game {
   owned = new Set<number>([START_PARCEL]);
   vehicles: Vehicle[] = [];
   tools: Tool[] = [];
-  silo: Record<CropId, number> = { wheat: 0, corn: 0, soy: 0 };
-  prices: Record<CropId, number> = { wheat: CROP_DEFS.wheat.basePrice, corn: CROP_DEFS.corn.basePrice, soy: CROP_DEFS.soy.basePrice };
-  priceHistory: Record<CropId, number[]> = { wheat: [], corn: [], soy: [] };
+  silo: Record<CropId, number> = emptyCropRecord(() => 0);
+  prices: Record<CropId, number> = Object.fromEntries(CROPS.map(c => [c, CROP_DEFS[c].basePrice])) as Record<CropId, number>;
+  priceHistory: Record<CropId, number[]> = emptyCropRecord<number[]>(() => []);
   upgrades: Record<UpgradeId, number> = { plow: 0, seeder: 0, header: 0, wagon: 0, engine: 0 };
   stats: Stats = newStats();
   goalIdx = 0;
@@ -808,9 +808,11 @@ export class Game {
     for (const fs of data.fields as FieldSave[]) g.world.addField(Field.load(fs));
     g.vehicles = data.vehicles.map(v => ({ ...v, status: 'Idle', moving: false, working: null, unloadingTo: null, waiting: false }));
     g.tools = data.tools;
-    g.silo = data.silo;
-    g.prices = data.prices;
-    g.priceHistory = data.priceHistory;
+    // Older saves know fewer crops; keep defaults for the new ones.
+    g.silo = { ...g.silo, ...data.silo };
+    g.prices = { ...g.prices, ...data.prices };
+    g.priceHistory = { ...g.priceHistory, ...data.priceHistory };
+    for (const c of CROPS) if (g.priceHistory[c].length === 0) g.priceHistory[c].push(g.prices[c]);
     g.upgrades = { ...g.upgrades, ...data.upgrades };
     g.stats = { ...newStats(), ...data.stats };
     g.goalIdx = data.goalIdx;

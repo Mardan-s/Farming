@@ -1,4 +1,4 @@
-import { CROPS, CROP_DEFS, MINUTES_PER_DAY, type CropId } from './config';
+import { CROPS, CROP_DEFS, MINUTES_PER_DAY, emptyCropRecord, type CropId } from './config';
 import type { Axis } from './coverage';
 import { centroid, polygonArea, type Pt } from './geometry';
 
@@ -59,8 +59,8 @@ export class Field {
   /** Summary used by the UI. */
   summary(clock: number) {
     let grass = 0, plowed = 0, growing = 0, ready = 0, stubble = 0, progress = 0;
-    const cropCounts: Record<CropId, number> = { wheat: 0, corn: 0, soy: 0 };
-    const readyCounts: Record<CropId, number> = { wheat: 0, corn: 0, soy: 0 };
+    const cropCounts = emptyCropRecord(() => 0);
+    const readyCounts = emptyCropRecord(() => 0);
     for (let i = 0; i < this.cells.length; i++) {
       switch (this.state[i]) {
         case CellState.Grass: grass++; break;

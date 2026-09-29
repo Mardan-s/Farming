@@ -37,7 +37,7 @@ html, body {
 #ui { position: fixed; inset: 0; pointer-events: none; z-index: 2; }
 #ui button, #ui .sheet, #ui .card, #ui .chip, #goal { pointer-events: auto; }
 
-#night {
+#night-unused {
   position: absolute; inset: 0; opacity: 0; pointer-events: none;
   background: radial-gradient(ellipse at center, rgba(20, 30, 80, 0.75), rgba(5, 10, 40, 1));
   transition: opacity 1s linear;
@@ -126,14 +126,13 @@ button.wide { width: 100%; margin-top: 8px; }
 /* Toasts */
 #toasts {
   position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  left: calc(8px + var(--safe-left));
   top: calc(150px + var(--safe-top));
-  width: min(440px, calc(100vw - 24px));
+  width: min(440px, calc(100vw - 80px - var(--safe-left) - var(--safe-right)));
   display: flex;
   flex-direction: column;
   gap: 6px;
-  align-items: center;
+  align-items: flex-start;
 }
 .toast {
   background: var(--panel);
@@ -261,3 +260,10 @@ button.wide { width: 100%; margin-top: 8px; }
   .sheet { max-height: 70vh; }
   #toasts { top: calc(60px + var(--safe-top)); }
 }
+
+.crops { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
+.crop { display: grid; grid-template-columns: auto 1fr; column-gap: 6px; align-items: center; text-align: left; padding: 6px 8px; min-height: 48px; }
+.crop .ico { grid-row: span 2; font-size: 20px; }
+.crop b, .crop small { min-width: 0; overflow-wrap: anywhere; }
+.crop b { font-size: 12.5px; }
+.crop small { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }

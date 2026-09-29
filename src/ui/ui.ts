@@ -6,7 +6,7 @@ import { GOALS } from '../game/goals';
 import type { Game, Op, Vehicle } from '../game/sim';
 import { parcelRect } from '../game/world';
 import { setMuted, sfx } from '../audio';
-import type { GameScene, SceneHost, TapInfo } from '../render/GameScene';
+import type { TapInfo, ViewControls, ViewHost } from '../render3d/types';
 
 type Panel =
   | { kind: 'home' }
@@ -26,7 +26,7 @@ const liters = (n: number) => `${Math.round(n).toLocaleString()} L`;
 const ha = (cells: number) => `${(cells * 0.01).toFixed(2)} ha`;
 const vIcon = (v: Vehicle) => (v.kind === 'tractor' ? '🚜' : '🌾');
 
-export class UI implements SceneHost {
+export class UI implements ViewHost {
   drawMode = false;
   draft: Pt[] = [];
   draftCells: Pt[] = [];
@@ -44,7 +44,7 @@ export class UI implements SceneHost {
   private panelHtml = '';
   private modalHtml = '';
   private live = new Map<string, () => string>();
-  private scene!: GameScene;
+  private view!: ViewControls;
   private pending: { msg: string; yes: string; run: () => void } | null = null;
 
   constructor(private sim: Game, private onSave: () => void, private onReset: () => void) {
@@ -60,13 +60,12 @@ export class UI implements SceneHost {
     setMuted(sim.muted);
   }
 
-  attach(scene: GameScene) { this.scene = scene; }
+  attach(view: ViewControls) { this.view = view; }
 
   // ---------- shell ----------
 
   private buildShell() {
     document.getElementById('ui')!.innerHTML = `
-      <div id="night"></div>
       <div id="top">
         <div class="chip money"><span id="money"></span></div>
         <div class="chip clock"><span id="clock"></span></div>
@@ -78,6 +77,8 @@ export class UI implements SceneHost {
       <div id="zoom">
         <button class="round" data-act="zoom" data-arg="1.25" aria-label="Zoom in">＋</button>
         <button class="round" data-act="zoom" data-arg="0.8" aria-label="Zoom out">－</button>
+        <button class="round" data-act="rotate" data-arg="-0.785" aria-label="Rotate left">⟲</button>
+        <button class="round" data-act="rotate" data-arg="0.785" aria-label="Rotate right">⟳</button>
         <button class="round" data-act="home" aria-label="Go to farmyard">🏠</button>
       </div>
       <div id="toasts"></div>
@@ -180,8 +181,9 @@ export class UI implements SceneHost {
         sim.speedIdx = (sim.speedIdx + 1) % SPEEDS.length;
         sfx.tap();
         break;
-      case 'zoom': this.scene.zoomBy(parseFloat(arg)); break;
-      case 'home': this.scene.centerOnCells(14, 52); break;
+      case 'zoom': this.view.zoomBy(parseFloat(arg)); break;
+      case 'rotate': this.view.rotateBy(parseFloat(arg)); break;
+      case 'home': this.view.centerOnCells(14, 52); break;
       case 'modal': sfx.tap(); this.openModal(arg as Modal); return;
       case 'closeModal': sfx.tap(); this.modal = null; this.render(true); return;
       case 'shopTab': this.shopTab = arg as typeof this.shopTab; sfx.tap(); break;
@@ -213,7 +215,7 @@ export class UI implements SceneHost {
         const id = parseInt(arg, 10);
         const v = sim.vehicle(id);
         this.modal = null;
-        if (v) { sfx.select(); this.selectVehicle(id); this.scene.centerOnCells(v.x, v.y); }
+        if (v) { sfx.select(); this.selectVehicle(id); this.view.centerOnCells(v.x, v.y); }
         return;
       }
       case 'job': {
@@ -411,13 +413,6 @@ export class UI implements SceneHost {
       const val = this.live.get(id)!();
       if (el && el.textContent !== val) el.textContent = val;
     }
-    // Night overlay follows the clock.
-    const h = this.sim.timeOfDay / 60;
-    let a = 0;
-    if (h >= 18 && h < 21) a = ((h - 18) / 3) * 0.42;
-    else if (h >= 21 || h < 5) a = 0.42;
-    else if (h >= 5 && h < 7) a = (1 - (h - 5) / 2) * 0.42;
-    $('#night').style.opacity = a.toFixed(3);
   }
 
   /** Live values keyed like "vstatus:3", "vcargo:3", "fgrow:2". */
@@ -545,9 +540,19 @@ export class UI implements SceneHost {
           return `<button class="job ${c.ok ? '' : 'off'}" data-act="job" data-arg="${op}:${crop ?? ''}" ${c.ok ? '' : 'disabled'}>
             <b>${label}</b><small>${sub}</small></button>`;
         };
+        let seeds = '';
         if (v.kind === 'tractor') {
           opts.push(btn('plow', '⛏️ Plow'));
-          for (const c of CROPS) opts.push(btn('seed', `${CROP_DEFS[c].icon} Seed ${CROP_DEFS[c].name}`, c));
+          const general = sim.checkFieldOp(v, f, 'seed');
+          const crops = CROPS.map(c => {
+            const d = CROP_DEFS[c];
+            const ok = general.ok && sim.checkFieldOp(v, f, 'seed', c).ok;
+            return `<button class="crop" data-act="job" data-arg="seed:${c}" ${ok ? '' : 'disabled'}>
+              <span class="ico">${d.icon}</span><b>${d.name}</b>
+              <small>${d.growDays} days · ${money(sim.prices[c])}</small></button>`;
+          }).join('');
+          seeds = `<div class="hint">🌱 Seed ${general.ok ? `${ha(general.cells)} — pick a crop (grow time · price per 1000 L):` : `— ${general.reason}`}</div>
+            <div class="crops">${crops}</div>`;
         } else {
           opts.push(btn('harvest', '🌾 Harvest'));
         }
@@ -557,6 +562,7 @@ export class UI implements SceneHost {
               ${vIcon(v)} ${v.name} → Field ${f.id} <span class="muted">${ha(f.cells.length)}</span></div>
             <div class="status" data-live="fstate:${f.id}"></div>
             <div class="jobs">${opts.join('')}</div>
+            ${seeds}
           </div>`;
       }
       case 'combineTarget': {
