@@ -11,7 +11,8 @@ export function mat(color: number, roughness?: number, metalness?: number) {
   const c = new THREE.Color(color);
   const dark = c.r + c.g + c.b < 0.35;
   const r = roughness ?? (dark ? 0.85 : 0.45);
-  const m0 = metalness ?? (dark ? 0 : 0.25);
+  // No reflection map, so keep metal subtle or it renders dark.
+  const m0 = Math.min(0.2, metalness ?? (dark ? 0 : 0.1));
   const key = `${color}-${r}-${m0}`;
   let m = mats.get(key);
   if (!m) {
@@ -71,7 +72,7 @@ function wheel(parent: THREE.Object3D, r: number, width: number, x: number, z: n
 
 const GLASS = 0x9fd3ea;
 const LIGHT_OFF = 0xfff4c2;
-const glassMat = () => new THREE.MeshStandardMaterial({ color: 0x5f8aa0, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.9 });
+const glassMat = () => new THREE.MeshStandardMaterial({ color: 0x5f8aa0, transparent: true, opacity: 0.55, roughness: 0.1, metalness: 0.2 });
 
 function headlights(parent: THREE.Object3D, x: number, y: number, zs: number[]) {
   const m = new THREE.MeshStandardMaterial({ color: LIGHT_OFF, emissive: 0xffe9a0, emissiveIntensity: 0, roughness: 0.2 });
@@ -235,7 +236,7 @@ export function buildRootHarvester(): VehicleModel {
   box(body, 2.1, 0.55, 1.1, 0x2f7d3a, -0.2, 0.8, 0); // chassis body
   box(body, 1.2, 0.6, 1.2, 0x2f7d3a, -0.55, 1.35, 0); // bunker walls
   box(body, 1.1, 0.05, 1.1, 0x5a4630, -0.55, 1.6, 0); // soil/crop in bunker
-  const glass = new THREE.MeshStandardMaterial({ color: 0x6f9fb8, transparent: true, opacity: 0.6, roughness: 0.05, metalness: 0.9 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x6f9fb8, transparent: true, opacity: 0.6, roughness: 0.1, metalness: 0.2 });
   box(body, 0.55, 0.5, 0.7, glass, 0.55, 1.35, 0);
   box(body, 0.6, 0.06, 0.78, 0xf5f5f5, 0.55, 1.63, 0);
   box(body, 0.9, 0.1, 0.9, 0x555555, 0.2, 1.1, 0); // sorting deck

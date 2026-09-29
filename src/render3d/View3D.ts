@@ -736,7 +736,7 @@ export class View3D implements ViewControls {
       : new THREE.Vector3(0.4, 0.8, -0.3).normalize();
     this.sun.intensity = (0.7 + day * 2.55) * (1 - 0.7 * this.cloud);
     this.sun.color.setHex(0x9fb2ff).lerp(new THREE.Color(0xfff0d8), day).lerp(new THREE.Color(0xffa860), dusk * 0.55);
-    this.hemi.intensity = (0.45 + day * 0.05) * (1 - 0.15 * this.cloud) + this.flash * 2.5;
+    this.hemi.intensity = (0.55 + day * 0.55) * (1 - 0.15 * this.cloud) + this.flash * 2.5;
     this.scene.environmentIntensity = (0.2 + day * 0.25) * (1 - 0.3 * this.cloud);
     this.sun.position.copy(this.target).addScaledVector(lightDir, 60);
     this.sun.target.position.copy(this.target);
