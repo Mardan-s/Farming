@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CROPS, CROP_DEFS, MAP_H, MAP_W } from '../game/config';
-import { CellState, type Field } from '../game/field';
+import { CellState, Weeds, type Field } from '../game/field';
 
 const CAP = MAP_W * MAP_H;
 const STAGE_HEIGHT = [0.14, 0.42, 0.78, 1];
@@ -24,6 +24,35 @@ function ridges(centers: number[], bottom: number, top: number) {
     colors.push(shade, shade, shade);
   }
   g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+/** A clump of spiky weeds with purple thistle heads. */
+function weedClump() {
+  const parts: THREE.BufferGeometry[] = [];
+  const spots = [[-0.28, -0.2], [0.22, 0.25], [0.05, -0.3], [-0.15, 0.3], [0.3, -0.05]];
+  for (const [x, z] of spots) {
+    const cone = new THREE.ConeGeometry(0.1, 1, 5).toNonIndexed();
+    cone.translate(x, 0.5, z);
+    parts.push(cone);
+    const head = new THREE.IcosahedronGeometry(0.07, 0).toNonIndexed();
+    head.translate(x, 1.02, z);
+    parts.push(head);
+  }
+  const pos: number[] = [];
+  const col: number[] = [];
+  parts.forEach((g, k) => {
+    const p = g.getAttribute('position');
+    const c = k % 2 === 0 ? [0.33, 0.45, 0.2] : [0.62, 0.35, 0.7];
+    for (let i = 0; i < p.count; i++) {
+      pos.push(p.getX(i), p.getY(i), p.getZ(i));
+      col.push(...c);
+    }
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.computeVertexNormals();
   return g;
 }
@@ -87,25 +116,37 @@ export class Crops {
   readonly group = new THREE.Group();
   private grain = new Pool(ridges([-0.4, -0.2, 0, 0.2, 0.4], 0.22, 0.15));
   private rows = new Pool(ridges([-1 / 3, 0, 1 / 3], 0.28, 0.1));
+  private weeds = new Pool(weedClump());
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
   private qV = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
   private c = new THREE.Color();
 
   constructor() {
-    this.group.add(this.grain.mesh, this.rows.mesh);
+    this.group.add(this.grain.mesh, this.rows.mesh, this.weeds.mesh);
   }
 
   clear(x: number, y: number) {
     const key = y * MAP_W + x;
     this.grain.remove(key);
     this.rows.remove(key);
+    this.weeds.remove(key);
   }
 
   /** stage: -1 not growing, 0 seeded (flat), 1..3 growing, 4 ripe. */
   update(field: Field, i: number, stage: number) {
     const cell = field.cells[i];
     const key = cell.y * MAP_W + cell.x;
+    const hash = ((cell.x * 73856093) ^ (cell.y * 19349663)) >>> 0;
+    if (field.state[i] === CellState.Seeded && field.weeds[i] === Weeds.Present) {
+      const def = CROP_DEFS[CROPS[field.crop[i]]];
+      const h = Math.max(0.28, def.look.height * 0.5) * (0.8 + (hash % 7) / 20);
+      this.q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (hash % 628) / 100);
+      this.m.compose(new THREE.Vector3(cell.x + 0.5, 0, cell.y + 0.5), this.q, new THREE.Vector3(1, h, 1));
+      this.weeds.set(key, this.m, this.c.setHex(0xffffff));
+    } else {
+      this.weeds.remove(key);
+    }
     if (field.state[i] !== CellState.Seeded || stage < 1) {
       this.grain.remove(key);
       this.rows.remove(key);
@@ -114,7 +155,6 @@ export class Crops {
     const def = CROP_DEFS[CROPS[field.crop[i]]];
     const pool = def.look.style === 'grain' ? this.grain : this.rows;
     (pool === this.grain ? this.rows : this.grain).remove(key);
-    const hash = ((cell.x * 73856093) ^ (cell.y * 19349663)) >>> 0;
     const jitter = 0.9 + ((hash % 1000) / 1000) * 0.2;
     const h = Math.max(0.04, def.look.height * STAGE_HEIGHT[stage - 1] * jitter);
     this.q.identity();

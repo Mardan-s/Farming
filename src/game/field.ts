@@ -1,10 +1,16 @@
-import { CROPS, CROP_DEFS, MINUTES_PER_DAY, emptyCropRecord, type CropId } from './config';
+import {
+  CROPS, CROP_DEFS, FERT_BONUS, LIME_HARVESTS, LIME_PENALTY, MINUTES_PER_DAY, ROLL_BONUS, WEED_PENALTY, emptyCropRecord,
+  type CropId,
+} from './config';
 import type { Axis } from './coverage';
 import { centroid, polygonArea, type Pt } from './geometry';
 
 export enum CellState { Grass = 0, Plowed = 1, Seeded = 2, Stubble = 3 }
 
 export const READY_STAGE = 4;
+
+/** Weed state per cell: none yet, weeds growing, or protected (weeded/sprayed this season). */
+export enum Weeds { None = 0, Present = 1, Protected = 2 }
 
 export interface FieldSave {
   id: number;
@@ -14,6 +20,10 @@ export interface FieldSave {
   state: number[];
   crop: number[];
   planted: number[];
+  fert?: number[];
+  rolled?: number[];
+  weeds?: number[];
+  lime?: number[];
 }
 
 export class Field {
@@ -24,6 +34,10 @@ export class Field {
   readonly state: Uint8Array;
   readonly crop: Int8Array; // index into CROPS, -1 for none
   readonly planted: Float64Array; // game minute of seeding
+  readonly fert: Uint8Array; // fertilizer passes this season (0-2)
+  readonly rolled: Uint8Array;
+  readonly weeds: Uint8Array;
+  readonly lime: Uint8Array; // harvests left before the soil needs lime
   readonly center: Pt;
 
   constructor(id: number, poly: Pt[], cells: Pt[], axis?: Axis) {
@@ -38,6 +52,10 @@ export class Field {
     this.state = new Uint8Array(cells.length);
     this.crop = new Int8Array(cells.length).fill(-1);
     this.planted = new Float64Array(cells.length);
+    this.fert = new Uint8Array(cells.length);
+    this.rolled = new Uint8Array(cells.length);
+    this.weeds = new Uint8Array(cells.length);
+    this.lime = new Uint8Array(cells.length).fill(LIME_HARVESTS - 1);
     this.center = centroid(poly);
   }
 
@@ -52,6 +70,28 @@ export class Field {
 
   isReady(i: number, clock: number) { return this.stage(i, clock) === READY_STAGE; }
 
+  /** About two thirds of cells are prone to weeds, fixed per cell so it doesn't flicker. */
+  weedProne(i: number) {
+    const c = this.cells[i];
+    return (((c.x * 92821) ^ (c.y * 68917) ^ (this.id * 131)) >>> 0) % 100 < 65;
+  }
+
+  /** Harvest multiplier from soil care: fertilizer, lime, rolling and weeds. */
+  yieldFactor(i: number) {
+    let f = 1 + this.fert[i] * FERT_BONUS;
+    if (this.lime[i] === 0) f -= LIME_PENALTY;
+    if (this.rolled[i]) f += ROLL_BONUS;
+    if (this.weeds[i] === Weeds.Present) f -= WEED_PENALTY;
+    return Math.max(0.3, f);
+  }
+
+  /** Resets per-season soil care; lime lasts across seasons. */
+  resetSeason(i: number) {
+    this.fert[i] = 0;
+    this.rolled[i] = 0;
+    this.weeds[i] = Weeds.None;
+  }
+
   cropAt(i: number): CropId | null {
     return this.crop[i] >= 0 ? CROPS[this.crop[i]] : null;
   }
@@ -59,6 +99,14 @@ export class Field {
   /** Summary used by the UI. */
   summary(clock: number) {
     let grass = 0, plowed = 0, growing = 0, ready = 0, stubble = 0, progress = 0;
+    let fert = 0, needLime = 0, weedy = 0, rolled = 0, yieldSum = 0;
+    for (let i = 0; i < this.cells.length; i++) {
+      fert += this.fert[i];
+      if (this.lime[i] === 0) needLime++;
+      if (this.weeds[i] === Weeds.Present) weedy++;
+      if (this.rolled[i]) rolled++;
+      yieldSum += this.yieldFactor(i);
+    }
     const cropCounts = emptyCropRecord(() => 0);
     const readyCounts = emptyCropRecord(() => 0);
     for (let i = 0; i < this.cells.length; i++) {
@@ -79,6 +127,8 @@ export class Field {
       total: this.cells.length, grass, plowed, growing, ready, stubble,
       growthPct: growing ? Math.round((progress / growing) * 100) : 0,
       cropCounts, readyCounts,
+      fertAvg: fert / this.cells.length, needLime, weedy, rolled,
+      yieldPct: Math.round((yieldSum / this.cells.length) * 100),
     };
   }
 
@@ -91,6 +141,10 @@ export class Field {
       state: Array.from(this.state),
       crop: Array.from(this.crop),
       planted: Array.from(this.planted),
+      fert: Array.from(this.fert),
+      rolled: Array.from(this.rolled),
+      weeds: Array.from(this.weeds),
+      lime: Array.from(this.lime),
     };
   }
 
@@ -101,6 +155,10 @@ export class Field {
     f.state.set(s.state);
     f.crop.set(s.crop);
     f.planted.set(s.planted);
+    if (s.fert) f.fert.set(s.fert);
+    if (s.rolled) f.rolled.set(s.rolled);
+    if (s.weeds) f.weeds.set(s.weeds);
+    if (s.lime) f.lime.set(s.lime);
     return f;
   }
 }

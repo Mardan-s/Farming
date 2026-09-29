@@ -1,18 +1,19 @@
 import {
-  AUTO_UNLOAD_THRESHOLD, COMBINE_SPEED, COMBINE_WORK_FACTOR, COMBINE_TANK, CROPS, CROP_DEFS, GAME_MIN_PER_SEC, HEADER_OFFSET, HEADER_WIDTH,
-  HITCH_OFFSET, MINUTES_PER_DAY, OFFLINE_CAP_MIN, OFFLINE_RATE, PLOW_WIDTH, SEEDER_WIDTH, SELL_UNLOAD, SHOP_ITEMS,
-  SILO_CAP, SILO_UNLOAD, SPEEDS, START_MONEY, START_PARCEL, TOOL_LEN, TOOL_SLOTS, TRACTOR_SPEED, UNLOAD_RATE,
-  UPGRADES, VEHICLE_SLOTS, WAGON_CAP, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
-  type CropId, type ToolKind, type UpgradeId, type VehicleKind,
+  AUTO_UNLOAD_THRESHOLD, COMBINE_SPEED, COMBINE_WORK_FACTOR, COMBINE_TANK, CROPS, CROP_DEFS, FIXED_TOOL_WIDTH,
+  GAME_MIN_PER_SEC, HEADER_OFFSET, HEADER_WIDTH, HITCH_OFFSET, LIME_HARVESTS, MINUTES_PER_DAY, OFFLINE_CAP_MIN,
+  OFFLINE_RATE, OP_DEFS, PLOW_WIDTH, ROOT_SPEED, ROOT_TANK, SEEDER_WIDTH, SELL_UNLOAD, SHOP_ITEMS, SILO_CAP, SILO_UNLOAD,
+  SPEEDS, START_MONEY, START_PARCEL, TOOL_LEN, TOOL_SLOTS, TRACTOR_SPEED, UNLOAD_RATE, UPGRADES, VEHICLE_SLOTS,
+  WAGON_CAP, WEATHER_DEFS, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
+  type CropId, type Op, type ToolKind, type UpgradeId, type VehicleKind, type Weather,
 } from './config';
 import { planPasses, type Axis } from './coverage';
-import { CellState, Field, type FieldSave } from './field';
+import { CellState, Field, READY_STAGE, Weeds, type FieldSave } from './field';
 import { angleLerp, dist, type Pt } from './geometry';
 import { GOALS, newStats, type Stats } from './goals';
 import { World, parcelRect } from './world';
 import { MAP_W } from './config';
 
-export type Op = 'plow' | 'seed' | 'harvest';
+export type { Op };
 export type Dest = 'silo' | 'sell';
 
 export interface Cargo { crop: CropId | null; amount: number }
@@ -24,7 +25,8 @@ export type Step =
   | { t: 'park' }
   | { t: 'attach'; toolId: number; timer?: number }
   | { t: 'detach'; timer?: number }
-  | { t: 'work'; op: Op; fieldId: number; crop?: CropId; path?: Waypoint[]; idx?: number; rounds?: number; abort?: boolean }
+  | { t: 'waitTool'; toolId: number }
+  | { t: 'work'; op: Op; fieldId: number; crop?: CropId; level?: number; path?: Waypoint[]; idx?: number; rounds?: number; abort?: boolean }
   | { t: 'follow'; combineId: number }
   | { t: 'unload'; dest: Dest; earned?: number };
 
@@ -74,8 +76,19 @@ export class Emitter {
   }
 }
 
-const TOOL_NAMES: Record<ToolKind, string> = { plow: 'plow', seeder: 'seeder', wagon: 'grain wagon' };
-const OP_VERB: Record<Op, string> = { plow: 'Plowing', seed: 'Seeding', harvest: 'Harvesting' };
+export const TOOL_NAMES: Record<ToolKind, string> = {
+  plow: 'plow', seeder: 'seeder', wagon: 'grain wagon', spreader: 'spreader', roller: 'roller', weeder: 'weeder',
+  sprayer: 'sprayer', planter: 'root planter',
+};
+export const VEHICLE_NAMES: Record<VehicleKind, string> = { tractor: 'Tractor', combine: 'Combine', rootHarvester: 'Root harvester' };
+
+export function isHarvester(v: Vehicle) { return v.kind === 'combine' || v.kind === 'rootHarvester'; }
+
+/** The implement a tractor needs for a job. */
+export function toolForOp(op: Op, crop?: CropId): ToolKind | undefined {
+  if (op === 'seed') return crop && CROP_DEFS[crop].root ? 'planter' : 'seeder';
+  return OP_DEFS[op].tool;
+}
 
 function gauss() {
   const u = 1 - Math.random();
@@ -102,6 +115,9 @@ export class Game {
   goalIdx = 0;
   deliverTo: Dest = 'sell';
   muted = false;
+  weather: Weather = 'sun';
+  weatherNext: Weather = 'cloudy';
+  weatherChangeAt = 6 * 60 + 5 * 60;
   private nextId = 1;
   private nextFieldId = 1;
   private tick = 0;
@@ -127,40 +143,61 @@ export class Game {
 
   cargoOf(v: Vehicle): { cargo: Cargo; cap: number } | null {
     if (v.kind === 'combine') return { cargo: v.tank, cap: COMBINE_TANK[this.upgrades.header] };
+    if (v.kind === 'rootHarvester') return { cargo: v.tank, cap: ROOT_TANK };
     const t = this.toolOf(v);
     if (t?.kind === 'wagon') return { cargo: t.load, cap: WAGON_CAP[this.upgrades.wagon] };
     return null;
   }
 
-  speedOf(v: Vehicle) { return v.kind === 'tractor' ? TRACTOR_SPEED[this.upgrades.engine] : COMBINE_SPEED; }
+  speedOf(v: Vehicle) {
+    if (v.kind === 'tractor') return TRACTOR_SPEED[this.upgrades.engine];
+    return v.kind === 'rootHarvester' ? ROOT_SPEED : COMBINE_SPEED;
+  }
 
-  toolWidth(kind: ToolKind | 'header') {
+  toolWidth(kind: ToolKind | 'header' | 'rootHeader') {
     if (kind === 'plow') return PLOW_WIDTH[this.upgrades.plow];
     if (kind === 'seeder') return SEEDER_WIDTH[this.upgrades.seeder];
     if (kind === 'header') return HEADER_WIDTH[this.upgrades.header];
-    return 1;
+    return FIXED_TOOL_WIDTH[kind] ?? 1;
+  }
+
+  /** Width of whatever does the work for this vehicle right now. */
+  workWidth(v: Vehicle) {
+    if (v.kind === 'combine') return this.toolWidth('header');
+    if (v.kind === 'rootHarvester') return this.toolWidth('rootHeader');
+    const t = this.toolOf(v);
+    return t ? this.toolWidth(t.kind) : 1;
   }
 
   /** Signed distance from vehicle center to its work point along the heading. */
   workOffset(v: Vehicle) {
-    if (v.kind === 'combine') return HEADER_OFFSET;
+    if (isHarvester(v)) return HEADER_OFFSET;
     const t = this.toolOf(v);
     return -(HITCH_OFFSET + (t ? TOOL_LEN[t.kind] / 2 : 0));
   }
 
   isIdle(v: Vehicle) { return v.steps.length === 0 || (v.steps.length === 1 && v.steps[0].t === 'park'); }
 
-  eligibleCount(field: Field, op: Op, crop?: CropId) {
+  eligibleCount(field: Field, op: Op, crop?: CropId, level?: number) {
     let n = 0;
-    for (let i = 0; i < field.cells.length; i++) if (this.eligible(field, i, op, crop)) n++;
+    for (let i = 0; i < field.cells.length; i++) if (this.eligible(field, i, op, crop, level)) n++;
     return n;
   }
 
-  private eligible(field: Field, i: number, op: Op, crop?: CropId) {
+  /** `level` caps a fertilizer job at one pass: cells below that many passes. */
+  private eligible(field: Field, i: number, op: Op, crop?: CropId, level = 2) {
     const s = field.state[i];
-    if (op === 'plow') return s === CellState.Grass || s === CellState.Stubble;
-    if (op === 'seed') return s === CellState.Plowed;
-    return s === CellState.Seeded && field.isReady(i, this.clock) && (!crop || field.cropAt(i) === crop);
+    const seeded = s === CellState.Seeded;
+    switch (op) {
+      case 'plow': return s === CellState.Grass || s === CellState.Stubble;
+      case 'seed': return s === CellState.Plowed;
+      case 'harvest': return seeded && field.isReady(i, this.clock) && (!crop || field.cropAt(i) === crop);
+      case 'fertilize': return field.fert[i] < Math.min(2, level) && (s === CellState.Plowed || (seeded && field.stage(i, this.clock) < READY_STAGE));
+      case 'lime': return field.lime[i] === 0;
+      case 'roll': return seeded && !field.rolled[i] && field.stage(i, this.clock) <= 1;
+      case 'weed': return seeded && field.weeds[i] !== Weeds.Protected && field.stage(i, this.clock) <= 2;
+      case 'spray': return seeded && field.weeds[i] !== Weeds.Protected && field.stage(i, this.clock) < READY_STAGE;
+    }
   }
 
   // ---------- entity creation ----------
@@ -170,7 +207,7 @@ export class Game {
     const pos = slotPos(VEHICLE_SLOTS, slot);
     const count = this.vehicles.filter(v => v.kind === kind).length + 1;
     const v: Vehicle = {
-      id: this.nextId++, kind, name: `${kind === 'tractor' ? 'Tractor' : 'Combine'} ${count}`,
+      id: this.nextId++, kind, name: `${VEHICLE_NAMES[kind]} ${count}`,
       x: pos.x, y: pos.y, heading: -Math.PI / 2, slot, toolId: null, tank: { crop: null, amount: 0 }, steps: [],
       autoUnload: true, status: 'Idle', moving: false, working: null, unloadingTo: null, waiting: false,
     };
@@ -193,6 +230,7 @@ export class Game {
     const prevDay = this.day;
     this.clock += dt * GAME_MIN_PER_SEC * this.speed;
     if (this.day !== prevDay) this.newDay();
+    if (this.clock >= this.weatherChangeAt) this.advanceWeather();
 
     for (const v of this.vehicles) { v.moving = false; v.working = null; v.unloadingTo = null; v.waiting = false; }
     for (const v of this.vehicles) this.updateVehicle(v, dt);
@@ -202,7 +240,38 @@ export class Game {
     if (this.tick >= 1) {
       this.tick = 0;
       this.dispatchUnloaders();
+      this.growWeeds();
       this.checkGoals();
+    }
+  }
+
+  private pickWeather(from: Weather): Weather {
+    let r = Math.random();
+    for (const [w, p] of WEATHER_DEFS[from].next) {
+      if ((r -= p) <= 0) return w;
+    }
+    return 'sun';
+  }
+
+  private advanceWeather() {
+    // Catch up if a lot of time passed (e.g. while offline).
+    while (this.clock >= this.weatherChangeAt) {
+      this.weather = this.weatherNext;
+      this.weatherNext = this.pickWeather(this.weather);
+      this.weatherChangeAt += (3 + Math.random() * 6) * 60;
+    }
+    this.events.emit('weather', this.weather);
+  }
+
+  /** Weeds creep into growing crops that haven't been weeded or sprayed. */
+  private growWeeds() {
+    for (const f of this.world.fields.values()) {
+      for (let i = 0; i < f.cells.length; i++) {
+        if (f.state[i] !== CellState.Seeded || f.weeds[i] !== Weeds.None || !f.weedProne(i)) continue;
+        if (f.stage(i, this.clock) < 2) continue;
+        f.weeds[i] = Weeds.Present;
+        this.events.emit('cell', f.id, i);
+      }
     }
   }
 
@@ -278,6 +347,13 @@ export class Game {
         v.steps.shift();
         break;
       }
+      case 'waitTool': {
+        const tool = this.tool(step.toolId);
+        const holder = tool?.attachedTo != null ? this.vehicle(tool.attachedTo) : undefined;
+        if (!tool || !holder) { v.steps.shift(); break; }
+        v.status = `Waiting for ${holder.name} to drop off the ${TOOL_NAMES[tool.kind]}`;
+        break;
+      }
       case 'work': this.stepWork(v, step, dt); break;
       case 'follow': this.stepFollow(v, step, dt); break;
       case 'unload': this.stepUnload(v, step, dt); break;
@@ -315,7 +391,7 @@ export class Game {
       s.rounds = rounds + 1;
       if (path.length === 0) {
         v.steps.shift();
-        this.events.emit('toast', `✅ ${v.name} finished ${OP_VERB[s.op].toLowerCase()} Field ${field.id}`, 'good');
+        this.events.emit('toast', `✅ ${v.name} finished ${OP_DEFS[s.op].verb.toLowerCase()} Field ${field.id}`, 'good');
         return;
       }
       s.path = path;
@@ -324,14 +400,14 @@ export class Game {
     const wp = s.path[s.idx!];
     if (s.op === 'harvest' && wp.work) {
       const cargo = this.cargoOf(v)!;
-      const per = CROP_DEFS[s.crop!].yieldPerCell * wp.work.width;
+      const per = CROP_DEFS[s.crop!].yieldPerCell * wp.work.width * 1.3;
       if (cargo.cap - cargo.cargo.amount < per) {
         v.waiting = true;
         v.status = v.autoUnload ? 'Tank full — waiting for a wagon' : 'Tank full — send a tractor with a wagon';
         return;
       }
     }
-    const factor = v.kind === 'combine' ? COMBINE_WORK_FACTOR : WORK_SPEED_FACTOR;
+    const factor = isHarvester(v) ? COMBINE_WORK_FACTOR : WORK_SPEED_FACTOR;
     const speed = this.speedOf(v) * (wp.work ? factor : 1);
     const px = v.x;
     const py = v.y;
@@ -340,16 +416,16 @@ export class Game {
       this.applyWork(v, s, field, px, py, wp.work);
       v.working = s.op;
     }
-    const remaining = this.eligibleCount(field, s.op, s.crop);
+    const remaining = this.eligibleCount(field, s.op, s.crop, s.level);
     const pct = Math.round((1 - remaining / field.cells.length) * 100);
-    v.status = `${OP_VERB[s.op]} Field ${field.id}${s.crop ? ` (${CROP_DEFS[s.crop].name})` : ''} · ${pct}%`;
+    v.status = `${OP_DEFS[s.op].verb} Field ${field.id}${s.crop ? ` (${CROP_DEFS[s.crop].name})` : ''} · ${pct}%`;
     if (arrived) s.idx!++;
   }
 
   private buildPath(v: Vehicle, s: Extract<Step, { t: 'work' }>, field: Field): Waypoint[] {
     const cells: Pt[] = [];
-    for (let i = 0; i < field.cells.length; i++) if (this.eligible(field, i, s.op, s.crop)) cells.push(field.cells[i]);
-    const width = this.toolWidth(s.op === 'plow' ? 'plow' : s.op === 'seed' ? 'seeder' : 'header');
+    for (let i = 0; i < field.cells.length; i++) if (this.eligible(field, i, s.op, s.crop, s.level)) cells.push(field.cells[i]);
+    const width = this.workWidth(v);
     const passes = planPasses(cells, field.axis, width, { x: v.x, y: v.y });
     const off = this.workOffset(v);
     const path: Waypoint[] = [];
@@ -383,7 +459,7 @@ export class Game {
         const y = band.axis === 'h' ? c : a;
         if (this.world.fieldIdAt(x, y) !== field.id) continue;
         const i = this.world.fieldCellIdx[y * MAP_W + x];
-        if (!this.eligible(field, i, s.op, s.crop)) continue;
+        if (!this.eligible(field, i, s.op, s.crop, s.level)) continue;
         if (!this.applyCell(v, s, field, i)) return;
       }
     }
@@ -391,32 +467,50 @@ export class Game {
 
   /** Returns false when work must stop (out of money / tank full). */
   private applyCell(v: Vehicle, s: Extract<Step, { t: 'work' }>, field: Field, i: number): boolean {
-    if (s.op === 'plow') {
-      field.state[i] = CellState.Plowed;
-      field.crop[i] = -1;
-      this.stats.plowed++;
-    } else if (s.op === 'seed') {
-      const cost = CROP_DEFS[s.crop!].seedCostPerCell;
-      if (this.money < cost) {
-        s.abort = true;
-        this.events.emit('toast', '💸 Out of money for seeds — sell some grain first', 'bad');
-        return false;
-      }
-      this.money -= cost;
-      field.state[i] = CellState.Seeded;
-      field.crop[i] = CROPS.indexOf(s.crop!);
-      field.planted[i] = this.clock;
-      this.stats.seeded++;
-    } else {
-      const cargo = this.cargoOf(v)!;
-      const y = CROP_DEFS[s.crop!].yieldPerCell;
-      if (cargo.cargo.amount + y > cargo.cap) return false;
-      cargo.cargo.crop = s.crop!;
-      cargo.cargo.amount += y;
-      field.state[i] = CellState.Stubble;
-      this.stats.harvested++;
-      if (!this.stats.cropsHarvested.includes(s.crop!)) this.stats.cropsHarvested.push(s.crop!);
+    const cost = s.op === 'seed' ? CROP_DEFS[s.crop!].seedCostPerCell : OP_DEFS[s.op].costPerCell ?? 0;
+    if (cost > 0 && this.money < cost) {
+      s.abort = true;
+      this.events.emit('toast', `💸 Out of money for ${s.op === 'seed' ? 'seeds' : OP_DEFS[s.op].name.toLowerCase()} — sell some grain first`, 'bad');
+      return false;
     }
+    switch (s.op) {
+      case 'plow':
+        field.state[i] = CellState.Plowed;
+        field.crop[i] = -1;
+        field.resetSeason(i);
+        this.stats.plowed++;
+        break;
+      case 'seed':
+        field.state[i] = CellState.Seeded;
+        field.crop[i] = CROPS.indexOf(s.crop!);
+        field.planted[i] = this.clock;
+        field.rolled[i] = 0;
+        field.weeds[i] = Weeds.None;
+        this.stats.seeded++;
+        break;
+      case 'fertilize': field.fert[i]++; this.stats.fertilized++; break;
+      case 'lime': field.lime[i] = LIME_HARVESTS; this.stats.limed++; break;
+      case 'roll': field.rolled[i] = 1; break;
+      case 'weed':
+      case 'spray':
+        field.weeds[i] = Weeds.Protected;
+        this.stats.weeded++;
+        break;
+      case 'harvest': {
+        const cargo = this.cargoOf(v)!;
+        const y = CROP_DEFS[s.crop!].yieldPerCell * field.yieldFactor(i);
+        if (cargo.cargo.amount + y > cargo.cap) return false;
+        cargo.cargo.crop = s.crop!;
+        cargo.cargo.amount += y;
+        field.state[i] = CellState.Stubble;
+        field.lime[i] = Math.max(0, field.lime[i] - 1);
+        field.resetSeason(i);
+        this.stats.harvested++;
+        if (!this.stats.cropsHarvested.includes(s.crop!)) this.stats.cropsHarvested.push(s.crop!);
+        break;
+      }
+    }
+    this.money -= cost;
     this.events.emit('cell', field.id, i);
     return true;
   }
@@ -519,8 +613,8 @@ export class Game {
 
   private dispatchUnloaders() {
     for (const c of this.vehicles) {
-      if (c.kind !== 'combine' || !c.autoUnload || c.tank.amount <= 0) continue;
-      const cap = COMBINE_TANK[this.upgrades.header];
+      if (!isHarvester(c) || !c.autoUnload || c.tank.amount <= 0) continue;
+      const cap = this.cargoOf(c)!.cap;
       const working = c.steps[0]?.t === 'work';
       if (working && c.tank.amount < cap * AUTO_UNLOAD_THRESHOLD) continue;
       const assigned = this.vehicles.some(t => t.steps.some(st => st.t === 'follow' && st.combineId === c.id));
@@ -574,6 +668,27 @@ export class Game {
       .sort((a, b) => (a.load.amount > 0 ? 1000 : 0) + dist(a, v) - ((b.load.amount > 0 ? 1000 : 0) + dist(b, v)));
     const target = free[0];
     if (!target) {
+      // Borrow it from a tractor that is just parked.
+      const lend = this.tools.find(t => {
+        const h = t.kind === kind && t.attachedTo != null && t.attachedTo !== v.id ? this.vehicle(t.attachedTo) : undefined;
+        return h && this.isIdle(h) && (t.reservedBy == null || t.reservedBy === v.id) && t.load.amount <= 0;
+      });
+      if (lend) {
+        const steps: Step[] = [];
+        if (cur) {
+          const p = this.attachPoint(cur);
+          steps.push({ t: 'goto', x: p.x, y: p.y }, { t: 'detach' });
+        }
+        const p = this.attachPoint(lend);
+        steps.push({ t: 'waitTool', toolId: lend.id }, { t: 'goto', x: p.x, y: p.y }, { t: 'attach', toolId: lend.id });
+        if (reserve) {
+          const holder = this.vehicle(lend.attachedTo!)!;
+          this.cancel(holder);
+          holder.steps = [{ t: 'goto', x: p.x, y: p.y }, { t: 'detach' }, { t: 'park' }];
+          lend.reservedBy = v.id;
+        }
+        return steps;
+      }
       const busy = this.tools.find(t => t.kind === kind && t.attachedTo != null);
       const holder = busy && this.vehicle(busy.attachedTo!);
       return holder
@@ -599,8 +714,11 @@ export class Game {
   /** Validates a field job for a vehicle without changing anything. */
   checkFieldOp(v: Vehicle, field: Field, op: Op, crop?: CropId): { ok: boolean; reason?: string; crop?: CropId; cells: number } {
     if (op === 'harvest') {
-      if (v.kind !== 'combine') return { ok: false, reason: 'Only a combine can harvest', cells: 0 };
+      if (!isHarvester(v)) return { ok: false, reason: 'Needs a combine or root harvester', cells: 0 };
+      const roots = v.kind === 'rootHarvester';
       const sum = field.summary(this.clock);
+      const mine = CROPS.filter(c => !!CROP_DEFS[c].root === roots);
+      const otherReady = CROPS.some(c => !mine.includes(c) && sum.readyCounts[c] > 0);
       let c: CropId | undefined;
       if (v.tank.amount > 0 && v.tank.crop) {
         c = v.tank.crop;
@@ -608,8 +726,9 @@ export class Game {
           return { ok: false, reason: sum.ready ? `Tank holds ${CROP_DEFS[c].name} — unload it first` : 'Nothing is ready yet', cells: 0 };
         }
       } else {
-        c = CROPS.slice().sort((a, b) => sum.readyCounts[b] - sum.readyCounts[a])[0];
+        c = mine.slice().sort((a, b) => sum.readyCounts[b] - sum.readyCounts[a])[0];
         if (sum.readyCounts[c] === 0) {
+          if (otherReady) return { ok: false, reason: roots ? 'This crop needs a combine' : 'Root crops need a root harvester', cells: 0 };
           return { ok: false, reason: sum.growing ? `Still growing (${sum.growthPct}%)` : 'Nothing to harvest', cells: 0 };
         }
       }
@@ -618,14 +737,22 @@ export class Game {
     if (v.kind !== 'tractor') return { ok: false, reason: 'Needs a tractor', cells: 0 };
     const n = this.eligibleCount(field, op);
     if (n === 0) {
-      if (op === 'plow') return { ok: false, reason: 'Nothing to plow', cells: 0 };
-      return { ok: false, reason: 'Plow the field first', cells: 0 };
+      const reasons: Record<Op, string> = {
+        plow: 'Nothing to plow', seed: 'Plow the field first', harvest: '',
+        fertilize: 'Plow or seed first (max 2 passes)', lime: 'Soil doesn\u2019t need lime yet',
+        roll: 'Roll right after seeding', weed: 'Only young crops can be weeded', spray: 'No growing crop to spray',
+      };
+      return { ok: false, reason: reasons[op], cells: 0 };
     }
-    if (op === 'seed' && crop && this.money < CROP_DEFS[crop].seedCostPerCell * Math.min(n, 20)) {
-      return { ok: false, reason: 'Not enough money for seeds', cells: n };
+    const cost = op === 'seed' ? (crop ? CROP_DEFS[crop].seedCostPerCell : 0) : OP_DEFS[op].costPerCell ?? 0;
+    if (cost > 0 && this.money < cost * Math.min(n, 20)) {
+      return { ok: false, reason: `Not enough money (${op === 'seed' ? 'seeds' : 'supplies'})`, cells: n };
     }
-    const tools = this.ensureTool(v, op === 'plow' ? 'plow' : 'seeder', false);
-    if (typeof tools === 'string') return { ok: false, reason: tools, cells: n };
+    const kind = toolForOp(op, crop);
+    if (kind && (op !== 'seed' || crop)) {
+      const tools = this.ensureTool(v, kind, false);
+      if (typeof tools === 'string') return { ok: false, reason: tools, cells: n };
+    }
     return { ok: true, crop, cells: n };
   }
 
@@ -633,23 +760,31 @@ export class Game {
     const v = this.vehicle(vid);
     const field = this.world.fields.get(fieldId);
     if (!v || !field) return 'Not available';
+    if (op === 'seed' && !crop) return 'Pick a crop';
     const check = this.checkFieldOp(v, field, op, crop);
     if (!check.ok) return check.reason ?? 'Not possible';
     this.cancel(v);
     const pre: Step[] = [];
-    if (v.kind === 'tractor') {
-      const tools = this.ensureTool(v, op === 'plow' ? 'plow' : 'seeder', true);
+    const kind = v.kind === 'tractor' ? toolForOp(op, crop) : undefined;
+    if (kind) {
+      const tools = this.ensureTool(v, kind, true);
       if (typeof tools === 'string') return tools;
       pre.push(...tools);
     }
-    v.steps = [...pre, { t: 'work', op, fieldId, crop: check.crop }, { t: 'park' }];
+    let level: number | undefined;
+    if (op === 'fertilize') {
+      let min = 2;
+      for (let i = 0; i < field.cells.length; i++) if (this.eligible(field, i, op)) min = Math.min(min, field.fert[i]);
+      level = min + 1;
+    }
+    v.steps = [...pre, { t: 'work', op, fieldId, crop: check.crop, level }, { t: 'park' }];
     return null;
   }
 
   orderUnloadCombine(tid: number, cid: number): string | null {
     const t = this.vehicle(tid);
     const c = this.vehicle(cid);
-    if (!t || !c || t.kind !== 'tractor' || c.kind !== 'combine') return 'Not available';
+    if (!t || !c || t.kind !== 'tractor' || !isHarvester(c)) return 'Not available';
     const cur = this.toolOf(t);
     const pre: Step[] = [];
     if (cur?.kind === 'wagon' && cur.load.amount > 0 && c.tank.crop && cur.load.crop !== c.tank.crop) {
@@ -730,7 +865,7 @@ export class Game {
     if (!item) return 'Unknown item';
     if (this.money < item.cost) return 'Not enough money';
     this.money -= item.cost;
-    if (kind === 'tractor' || kind === 'combine') {
+    if (kind === 'tractor' || kind === 'combine' || kind === 'rootHarvester') {
       this.addVehicle(kind);
       this.stats.vehiclesBought++;
     } else {
@@ -768,9 +903,10 @@ export class Game {
 
   save() {
     const cleanSteps = (steps: Step[]): Step[] => steps.map(s => {
-      if (s.t === 'work') return { t: 'work', op: s.op, fieldId: s.fieldId, crop: s.crop };
+      if (s.t === 'work') return { t: 'work', op: s.op, fieldId: s.fieldId, crop: s.crop, level: s.level };
       if (s.t === 'attach') return { t: 'attach', toolId: s.toolId };
       if (s.t === 'detach') return { t: 'detach' };
+      if (s.t === 'waitTool') return s;
       return s;
     });
     return {
@@ -794,6 +930,9 @@ export class Game {
       goalIdx: this.goalIdx,
       deliverTo: this.deliverTo,
       muted: this.muted,
+      weather: this.weather,
+      weatherNext: this.weatherNext,
+      weatherChangeAt: this.weatherChangeAt,
       nextId: this.nextId,
       nextFieldId: this.nextFieldId,
     };
@@ -818,6 +957,13 @@ export class Game {
     g.goalIdx = data.goalIdx;
     g.deliverTo = data.deliverTo;
     g.muted = data.muted;
+    if (data.weather) {
+      g.weather = data.weather;
+      g.weatherNext = data.weatherNext;
+      g.weatherChangeAt = data.weatherChangeAt;
+    } else {
+      g.weatherChangeAt = data.clock + 5 * 60;
+    }
     g.nextId = data.nextId;
     g.nextFieldId = data.nextFieldId;
 

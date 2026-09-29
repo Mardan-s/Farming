@@ -5,9 +5,9 @@ export const TILE = 24;
 export enum T {
   Grass0, Grass1, Grass2, Grass3, Meadow,
   PlowH, PlowV, SeedH, SeedV, StrawH, StrawV, StalkH, StalkV,
-  Gravel, Road, RoadTop, RoadBottom,
+  Gravel, Road, RoadTop, RoadBottom, RolledH, RolledV,
 }
-const COUNT = T.RoadBottom + 1;
+const COUNT = T.RolledV + 1;
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -84,6 +84,16 @@ export function buildTiles(): HTMLCanvasElement[] {
           ctx.fillStyle = '#d2b287';
           if (vertical) ctx.fillRect(row, a, 1, 1); else ctx.fillRect(a, row, 1, 1);
         }
+      }
+    });
+    // Rolled: flattened, lighter soil with the seed rows pressed in.
+    tiles[vertical ? T.RolledV : T.RolledH] = tile(ctx => {
+      ctx.fillStyle = '#8a6443';
+      ctx.fillRect(0, 0, TILE, TILE);
+      speckle(ctx, 4, 16, ['#7a5536', '#9c7552'], 1, 1);
+      for (let k = 0; k < TILE; k += 6) {
+        ctx.fillStyle = '#6f4c30';
+        if (vertical) ctx.fillRect(k + 3, 0, 1, TILE); else ctx.fillRect(0, k + 3, TILE, 1);
       }
     });
     tiles[vertical ? T.StrawV : T.StrawH] = tile(ctx => straw(ctx, vertical, false));

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COMBINE_LEN, COMBINE_WID, HEADER_OFFSET, TOOL_LEN } from '../game/config';
+import { COMBINE_LEN, COMBINE_WID, HEADER_OFFSET, TOOL_LEN, type ToolKind } from '../game/config';
 
 // Low-poly models built from primitives. Every model faces +x; 1 unit = 1 grid cell.
 
@@ -155,6 +155,40 @@ export function setHeader(model: VehicleModel, width: number) {
   model.headerWidth = width;
 }
 
+/** Self-propelled root harvester: digger at the front, sorting deck and bunker behind. */
+export function buildRootHarvester(): VehicleModel {
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  root.add(body);
+  const wheels = [
+    wheel(body, 0.45, 0.3, 0.35, 0.62, 0x333333), wheel(body, 0.45, 0.3, 0.35, -0.62, 0x333333),
+    wheel(body, 0.45, 0.3, -0.8, 0.62, 0x333333), wheel(body, 0.45, 0.3, -0.8, -0.62, 0x333333),
+  ];
+  box(body, 2.1, 0.55, 1.1, 0x2f7d3a, -0.2, 0.8, 0); // chassis body
+  box(body, 1.2, 0.6, 1.2, 0x2f7d3a, -0.55, 1.35, 0); // bunker walls
+  box(body, 1.1, 0.05, 1.1, 0x5a4630, -0.55, 1.6, 0); // soil/crop in bunker
+  const glass = new THREE.MeshLambertMaterial({ color: GLASS, transparent: true, opacity: 0.75 });
+  box(body, 0.55, 0.5, 0.7, glass, 0.55, 1.35, 0);
+  box(body, 0.6, 0.06, 0.78, 0xf5f5f5, 0.55, 1.63, 0);
+  box(body, 0.9, 0.1, 0.9, 0x555555, 0.2, 1.1, 0); // sorting deck
+  // Digging unit at the front.
+  const digger = new THREE.Group();
+  digger.position.set(HEADER_OFFSET, 0, 0);
+  body.add(digger);
+  box(digger, 0.7, 0.25, 2.0, 0x2f7d3a, 0, 0.35, 0);
+  for (const z of [-0.5, 0.5]) {
+    const share = box(digger, 0.4, 0.12, 0.5, 0x8c8c8c, 0.25, 0.1, z);
+    share.rotation.z = -0.35;
+  }
+  const lights = headlights(body, 0.85, 1.45, [0.25, -0.25]);
+  const pipe = new THREE.Group();
+  pipe.position.set(-0.55, 1.6, -0.55);
+  body.add(pipe);
+  box(pipe, 1.9, 0.12, 0.4, 0x3a3a3a, 0.95, 0, 0); // unloading conveyor
+  pipe.rotation.y = Math.PI * 0.94;
+  return { root, body, wheels, lights, pipe, header: digger };
+}
+
 export interface ToolModel {
   root: THREE.Group;
   kind: string;
@@ -163,7 +197,7 @@ export interface ToolModel {
   wheels: THREE.Group[];
 }
 
-export function buildTool(kind: 'plow' | 'seeder' | 'wagon', width: number): ToolModel {
+export function buildTool(kind: ToolKind, width: number): ToolModel {
   const root = new THREE.Group();
   const len = TOOL_LEN[kind];
   const wheels: THREE.Group[] = [];
@@ -189,6 +223,45 @@ export function buildTool(kind: 'plow' | 'seeder' | 'wagon', width: number): Too
       cyl(root, 0.1, 0.05, 0x333333, -0.32, 0.1, z, 'z', 10);
     }
     wheels.push(wheel(root, 0.22, 0.12, 0, width / 2 + 0.08, 0x777777), wheel(root, 0.22, 0.12, 0, -width / 2 - 0.08, 0x777777));
+  } else if (kind === 'spreader') {
+    // Hopper on two wheels with spinning discs at the back.
+    box(root, 0.7, 0.35, 1.1, 0xd9dde0, 0.05, 0.75, 0);
+    box(root, 0.5, 0.25, 0.8, 0xc4c9cc, 0.05, 0.47, 0);
+    box(root, 0.72, 0.05, 1.12, 0x2e7dc2, 0.05, 0.94, 0);
+    for (const z of [0.2, -0.2]) cyl(root, 0.14, 0.03, 0x555555, -0.35, 0.3, z, 'y', 12);
+    wheels.push(wheel(root, 0.28, 0.14, 0.1, 0.62, 0x2e7dc2), wheel(root, 0.28, 0.14, 0.1, -0.62, 0x2e7dc2));
+  } else if (kind === 'roller') {
+    box(root, 0.3, 0.1, width, 0x2d7a3a, 0.2, 0.55, 0);
+    const n = Math.max(1, Math.round(width / 1.3));
+    for (let i = 0; i < n; i++) {
+      const seg = width / n;
+      cyl(root, 0.26, seg - 0.06, 0x6b7075, -0.15, 0.26, -width / 2 + seg * (i + 0.5), 'z', 14);
+    }
+  } else if (kind === 'weeder') {
+    box(root, 0.18, 0.12, width, 0xd4652a, 0.1, 0.5, 0);
+    const n = width * 4;
+    for (let i = 0; i < n; i++) {
+      const z = -width / 2 + (i + 0.5) * (width / n);
+      const tine = box(root, 0.03, 0.42, 0.02, 0x333333, -0.12, 0.25, z);
+      tine.rotation.z = 0.5;
+    }
+  } else if (kind === 'sprayer') {
+    // Trailed tank with a boom; the boom folds for transport.
+    box(root, 0.9, 0.08, 0.7, 0x444444, 0.1, 0.42, 0);
+    add(root, new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.95, 16), mat(0xf2f2f2)), 0.1, 0.8, 0).rotation.z = Math.PI / 2;
+    box(root, 0.08, 0.08, width, 0xd9a21c, -0.45, 0.62, 0);
+    for (let z = -width / 2 + 0.25; z < width / 2; z += 0.5) box(root, 0.03, 0.2, 0.03, 0x666666, -0.45, 0.5, z);
+    wheels.push(wheel(root, 0.3, 0.14, 0.1, 0.45, 0x333333), wheel(root, 0.3, 0.14, 0.1, -0.45, 0x333333));
+  } else if (kind === 'planter') {
+    box(root, 0.3, 0.12, width, 0x444444, 0.3, 0.45, 0);
+    for (let i = 0; i < width; i++) {
+      const z = -width / 2 + i + 0.5;
+      box(root, 0.8, 0.45, 0.8, 0xc0392b, 0, 0.85, z); // seed potato hopper
+      box(root, 0.82, 0.05, 0.82, 0x8e2a1f, 0, 1.1, z);
+      const ridger = box(root, 0.3, 0.18, 0.3, 0x6b6b6b, -0.5, 0.12, z);
+      ridger.rotation.y = Math.PI / 4;
+    }
+    wheels.push(wheel(root, 0.22, 0.12, 0.2, width / 2 + 0.1, 0x777777), wheel(root, 0.22, 0.12, 0.2, -width / 2 - 0.1, 0x777777));
   } else {
     const W = 1.2, L = 1.7, H = 0.5, y0 = 0.42;
     box(root, L, 0.06, W, 0x2f6e2f, -0.1, y0, 0); // floor

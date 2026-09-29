@@ -2,23 +2,40 @@ import * as THREE from 'three';
 import {
   COMBINE_LEN, CROP_DEFS, ELEVATOR, HEADER_OFFSET, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS,
   PARCEL_W, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, parcelPrice,
+  type Op, type ToolKind, type Weather,
 } from '../game/config';
 import { CellState, type Field } from '../game/field';
 import type { Pt } from '../game/geometry';
-import type { Game, Vehicle } from '../game/sim';
+import { isHarvester, type Game, type Vehicle } from '../game/sim';
+import { setRain, sfx } from '../audio';
 import { PARCEL_COUNT, inRect, parcelRect } from '../game/world';
 import { Crops } from './crops';
 import { Ground } from './ground';
 import { T, buildTiles } from './groundTiles';
 import { disposeSprite, textSprite } from './labels';
 import {
-  buildCombine, buildElevator, buildFarmhouse, buildShed, buildSilo, buildTool, buildTractor, buildTrees, setHeader,
+  buildCombine, buildElevator, buildFarmhouse, buildRootHarvester, buildShed, buildSilo, buildTool, buildTractor, buildTrees, setHeader,
   type ToolModel, type VehicleModel,
 } from './models';
 import { Particles } from './particles';
 import type { TapInfo, ViewControls, ViewHost } from './types';
 
 const PITCH = THREE.MathUtils.degToRad(55);
+const RAIN_DROPS = 1500;
+const CLOUD: Record<Weather, number> = { sun: 0, cloudy: 0.55, rain: 0.8, storm: 1 };
+const RAIN: Record<Weather, number> = { sun: 0, cloudy: 0, rain: 0.6, storm: 1 };
+/** Implements fold narrower when driving on the road. */
+const FOLDED: Partial<Record<ToolKind, number>> = { seeder: 3, roller: 2.4, weeder: 2.4, sprayer: 2.2 };
+/** Particle look per job. */
+const WORK_FX: Record<Exclude<Op, 'harvest'>, { color: number; size: [number, number]; up: number; life: number; alpha: number; n: number; spread?: number }> = {
+  plow: { color: 0x8a6a48, size: [0.25, 0.9], up: 0.6, life: 1.4, alpha: 0.45, n: 3 },
+  seed: { color: 0xd9c7a0, size: [0.1, 0.3], up: 0.3, life: 0.8, alpha: 0.5, n: 2 },
+  fertilize: { color: 0xf4f4f0, size: [0.05, 0.07], up: 1.2, life: 0.7, alpha: 0.95, n: 5, spread: 4 },
+  lime: { color: 0xe8e6de, size: [0.3, 1.1], up: 0.5, life: 1.6, alpha: 0.5, n: 4, spread: 2.5 },
+  roll: { color: 0xa08a6a, size: [0.2, 0.6], up: 0.3, life: 1, alpha: 0.3, n: 2 },
+  weed: { color: 0x6f8f3a, size: [0.06, 0.1], up: 1, life: 0.6, alpha: 0.9, n: 3 },
+  spray: { color: 0xcfe6ff, size: [0.15, 0.5], up: 0.1, life: 0.9, alpha: 0.35, n: 5 },
+};
 const FOV = 38;
 
 interface VehicleView { model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number }
@@ -83,6 +100,16 @@ export class View3D implements ViewControls {
   private skyDusk = new THREE.Color(0xf2a66e);
   private skyNight = new THREE.Color(0x0e1633);
   private sky = new THREE.Color();
+  private skyGrey = new THREE.Color(0x8e99a2);
+  private cloud = 0;
+  private rainLevel = 0;
+  private wet = 0;
+  private flash = 0;
+  private nextBolt = 3;
+  private rainAudioT = 0;
+  private rain!: THREE.LineSegments;
+  private rainPos = new Float32Array(RAIN_DROPS * 6);
+  private fieldSigs = new Map<number, string>();
 
   constructor(parent: HTMLElement, private sim: Game, private host: ViewHost) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -128,6 +155,7 @@ export class View3D implements ViewControls {
 
     this.redrawParcels();
     this.redrawFields();
+    this.buildRain();
 
     sim.events.on('cell', (fid: number, i: number) => {
       const f = sim.world.fields.get(fid);
@@ -172,9 +200,12 @@ export class View3D implements ViewControls {
     switch (f.state[i]) {
       case CellState.Grass: return T.Meadow;
       case CellState.Plowed: return v ? T.PlowV : T.PlowH;
-      case CellState.Seeded: return stage <= 0 ? (v ? T.SeedV : T.SeedH) : (v ? T.PlowV : T.PlowH);
+      case CellState.Seeded:
+        if (f.rolled[i]) return v ? T.RolledV : T.RolledH;
+        return stage <= 0 ? (v ? T.SeedV : T.SeedH) : (v ? T.PlowV : T.PlowH);
       default: {
         const crop = f.cropAt(i);
+        if (crop && CROP_DEFS[crop].root) return v ? T.RolledV : T.RolledH; // dug-over bare soil
         const stalks = crop ? CROP_DEFS[crop].look.stalks : false;
         return stalks ? (v ? T.StalkV : T.StalkH) : (v ? T.StrawV : T.StrawH);
       }
@@ -210,7 +241,23 @@ export class View3D implements ViewControls {
     this.crops.update(f, i, stage);
   }
 
+  /** Short field label: number plus icons for what the field needs. */
+  private fieldLabel(f: Field) {
+    const s = f.summary(this.sim.clock);
+    let label = `${f.id}`;
+    if (s.ready) label += ' ✅';
+    if (s.weedy > s.total * 0.05) label += ' 🌿';
+    if (s.needLime > s.total * 0.2) label += ' 🪨';
+    return label;
+  }
+
   private sweepGrowth() {
+    let relabel = false;
+    for (const f of this.sim.world.fields.values()) {
+      const sig = this.fieldLabel(f);
+      if (this.fieldSigs.get(f.id) !== sig) relabel = true;
+    }
+    if (relabel) this.redrawFields();
     for (const f of this.sim.world.fields.values()) {
       const cache = this.stageCache.get(f.id);
       if (!cache) continue;
@@ -345,7 +392,9 @@ export class View3D implements ViewControls {
       const line = new THREE.Mesh(ribbon(f.poly, true, selected ? 0.22 : 0.12, 0.04), mat);
       line.renderOrder = 3;
       this.fieldGroup.add(line);
-      const s = textSprite(`${f.id}`, 0.8, { bg: selected ? 'rgba(120,90,0,0.8)' : 'rgba(0,0,0,0.45)' });
+      const label = this.fieldLabel(f);
+      this.fieldSigs.set(f.id, label);
+      const s = textSprite(label, 0.8, { bg: selected ? 'rgba(120,90,0,0.8)' : 'rgba(0,0,0,0.45)' });
       s.position.set(f.center.x, 1.8, f.center.y);
       this.fieldGroup.add(s);
     }
@@ -536,7 +585,7 @@ export class View3D implements ViewControls {
     let best: number | null = null, bestD = Infinity;
     for (const v of this.sim.vehicles) {
       const d = Math.hypot(v.x - x, v.y - y);
-      if (d < (v.kind === 'combine' ? 1.6 : 1.1) && d < bestD) { best = v.id; bestD = d; }
+      if (d < (isHarvester(v) ? 1.6 : 1.1) && d < bestD) { best = v.id; bestD = d; }
     }
     return best;
   }
@@ -564,6 +613,7 @@ export class View3D implements ViewControls {
     this.syncVehicles(dt);
     this.updateSelection();
     this.updateDraft();
+    this.updateWeather(dt);
     this.updateLighting();
     this.updatePopups(dt);
     this.particles.update(dt);
@@ -576,12 +626,14 @@ export class View3D implements ViewControls {
     // 0 at night, 1 in full day, with dawn/dusk ramps.
     const day = h < 5 || h >= 21 ? 0 : h < 7.5 ? (h - 5) / 2.5 : h < 18 ? 1 : (21 - h) / 3;
     const dusk = Math.max(0, 1 - Math.abs(day - 0.45) / 0.45) * (h > 12 ? 1 : 0.6);
-    this.sky.copy(this.skyNight).lerp(this.skyDay, day).lerp(this.skyDusk, dusk * 0.45);
+    this.sky.copy(this.skyNight).lerp(this.skyDay, day).lerp(this.skyDusk, dusk * 0.45 * (1 - this.cloud));
+    this.sky.lerp(this.skyGrey.clone().multiplyScalar(0.25 + 0.75 * day), this.cloud * 0.75);
+    if (this.flash > 0) this.sky.lerp(new THREE.Color(0xdfe6ff), this.flash * 0.6);
     this.scene.background = this.sky;
     (this.scene.fog as THREE.Fog).color.copy(this.sky);
-    this.sun.intensity = 0.35 + day * 2.4;
+    this.sun.intensity = (0.35 + day * 2.4) * (1 - 0.72 * this.cloud);
     this.sun.color.setHex(0x9fb2ff).lerp(new THREE.Color(0xfff1dc), day).lerp(new THREE.Color(0xffb070), dusk * 0.5);
-    this.hemi.intensity = 0.45 + day * 0.8;
+    this.hemi.intensity = (0.45 + day * 0.8) * (1 - 0.2 * this.cloud) + this.flash * 2.5;
     // Sun sweeps across the sky during the day.
     const ang = ((h - 6) / 12) * Math.PI;
     const dir = new THREE.Vector3(-Math.cos(ang) * 0.8, 0.9 + Math.sin(ang) * 0.6, 0.45).normalize();
@@ -598,12 +650,67 @@ export class View3D implements ViewControls {
     for (const v of this.vViews.values()) v.model.lights.emissiveIntensity = night > 0.5 ? 2.5 : 0;
   }
 
+  private buildRain() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.rainPos, 3));
+    g.setDrawRange(0, 0);
+    this.rain = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xb8cbe0, transparent: true, opacity: 0.55 }));
+    this.rain.frustumCulled = false;
+    this.scene.add(this.rain);
+    for (let i = 0; i < RAIN_DROPS; i++) this.respawnDrop(i, Math.random() * 20);
+  }
+
+  private respawnDrop(i: number, y: number) {
+    const x = this.target.x + (Math.random() - 0.5) * 60;
+    const z = this.target.z + (Math.random() - 0.5) * 60;
+    this.rainPos.set([x, y, z, x - 0.12, y - 0.8, z + 0.04], i * 6);
+  }
+
+  private updateWeather(dt: number) {
+    const w = this.sim.weather;
+    this.cloud += (CLOUD[w] - this.cloud) * Math.min(1, dt * 0.35);
+    this.rainLevel += (RAIN[w] - this.rainLevel) * Math.min(1, dt * 0.5);
+    this.wet = THREE.MathUtils.clamp(this.wet + (this.rainLevel > 0.2 ? dt * 0.06 : -dt * 0.015), 0, 1);
+    this.ground.setWetness(this.wet);
+    const active = Math.floor(RAIN_DROPS * this.rainLevel);
+    const p = this.rainPos;
+    const fall = 24 * dt;
+    for (let i = 0; i < active; i++) {
+      const k = i * 6;
+      p[k + 1] -= fall; p[k + 4] -= fall;
+      p[k] -= fall * 0.15; p[k + 3] -= fall * 0.15;
+      const far = Math.abs(p[k] - this.target.x) > 32 || Math.abs(p[k + 2] - this.target.z) > 32;
+      if (p[k + 4] < 0 || far) {
+        if (p[k + 4] < 0 && Math.random() < 0.3) {
+          this.particles.emit(p[k + 3], 0.05, p[k + 5], 0, 0.6, 0, { color: 0xcfe0f0, life: 0.25, size: [0.05, 0.12], alpha: 0.6, gravity: 4 });
+        }
+        this.respawnDrop(i, 16 + Math.random() * 6);
+      }
+    }
+    this.rain.geometry.setDrawRange(0, active * 2);
+    this.rain.geometry.getAttribute('position').needsUpdate = true;
+    // Lightning during storms.
+    this.nextBolt -= dt;
+    if (w === 'storm' && this.nextBolt <= 0) {
+      this.flash = 1;
+      this.nextBolt = 5 + Math.random() * 9;
+      setTimeout(() => sfx.thunder(), 500 + Math.random() * 1200);
+    }
+    this.flash = Math.max(0, this.flash - dt * 3.5);
+    if (this.flash > 0.3 && this.flash < 0.5) this.flash = 0.2 + Math.random() * 0.6; // flicker
+    this.rainAudioT += dt;
+    if (this.rainAudioT > 0.5) { this.rainAudioT = 0; setRain(this.rainLevel); }
+  }
+
   private syncTools() {
     for (const [id, view] of this.tViews) {
       if (!this.sim.tools.some(t => t.id === id)) { view.root.removeFromParent(); this.tViews.delete(id); }
     }
     for (const t of this.sim.tools) {
-      const width = t.kind === 'wagon' ? 1 : this.sim.toolWidth(t.kind);
+      const holder = t.attachedTo != null ? this.sim.vehicle(t.attachedTo) : undefined;
+      const working = holder?.steps[0]?.t === 'work';
+      const full = t.kind === 'wagon' || t.kind === 'spreader' ? 1 : this.sim.toolWidth(t.kind);
+      const width = working ? full : Math.min(full, FOLDED[t.kind] ?? full);
       let view = this.tViews.get(t.id);
       if (!view || view.width !== width) {
         if (view) { view.root.removeFromParent(); this.pickables.splice(this.pickables.indexOf(view.root), 1); }
@@ -634,7 +741,8 @@ export class View3D implements ViewControls {
     for (const v of this.sim.vehicles) {
       let view = this.vViews.get(v.id);
       if (!view) {
-        const model = v.kind === 'tractor' ? buildTractor() : buildCombine(this.sim.toolWidth('header'));
+        const model = v.kind === 'tractor' ? buildTractor()
+          : v.kind === 'rootHarvester' ? buildRootHarvester() : buildCombine(this.sim.toolWidth('header'));
         model.root.userData.vehicleId = v.id;
         const bubble = textSprite('⚠️', 0.9);
         bubble.visible = false;
@@ -651,15 +759,15 @@ export class View3D implements ViewControls {
       m.root.rotation.y = -v.heading;
       m.body.position.y = v.moving ? Math.abs(Math.sin(this.time * 22 + v.id)) * 0.015 : 0;
       for (const w of m.wheels) w.rotation.z -= moved / w.userData.radius;
-      if (v.kind === 'combine') {
-        setHeader(m, this.sim.toolWidth('header'));
+      if (v.kind === 'combine') setHeader(m, this.sim.toolWidth('header'));
+      if (isHarvester(v)) {
         if (v.working && m.reel) m.reel.rotation.z -= dt * 5;
         const want = v.unloadingTo != null ? Math.PI / 2 : Math.PI * 0.94;
         view.pipeAngle += (want - view.pipeAngle) * Math.min(1, dt * 3);
         m.pipe!.rotation.y = view.pipeAngle;
       }
       view.bubble.visible = v.waiting;
-      view.bubble.position.set(v.x, (v.kind === 'combine' ? 2.8 : 1.9) + Math.sin(this.time * 5) * 0.1, v.y);
+      view.bubble.position.set(v.x, (isHarvester(v) ? 2.8 : 1.9) + Math.sin(this.time * 5) * 0.1, v.y);
       this.emitVehicleFx(v, view, dt);
     }
   }
@@ -672,7 +780,14 @@ export class View3D implements ViewControls {
     const dx = Math.cos(v.heading), dz = Math.sin(v.heading);
     const lx = dz, lz = -dx;
     const rand = (s: number) => (Math.random() - 0.5) * s;
-    if (v.working === 'harvest') {
+    if (v.working === 'harvest' && v.kind === 'rootHarvester') {
+      for (let i = 0; i < 3; i++) {
+        const o = rand(2);
+        P.emit(v.x + dx * HEADER_OFFSET + lx * o, 0.2, v.y + dz * HEADER_OFFSET + lz * o, rand(0.8), 0.8 + Math.random() * 0.5, rand(0.8),
+          { color: 0x6b4a2f, life: 0.9, size: [0.08, 0.2], alpha: 0.9, gravity: 2 });
+      }
+      P.emit(v.x - dx * 1.2, 0.3, v.y - dz * 1.2, rand(0.5), 0.4, rand(0.5), { color: 0x8a6a48, life: 1.4, size: [0.3, 0.9], alpha: 0.35 });
+    } else if (v.working === 'harvest') {
       const w = this.sim.toolWidth('header');
       for (let i = 0; i < 2; i++) {
         const o = rand(w);
@@ -685,16 +800,16 @@ export class View3D implements ViewControls {
     } else if (v.working) {
       const t = this.sim.toolOf(v);
       if (t) {
+        const fx = WORK_FX[v.working];
         const w = this.sim.toolWidth(t.kind);
         const tx = Math.cos(t.heading), tz = Math.sin(t.heading);
-        for (let i = 0; i < (v.working === 'plow' ? 3 : 2); i++) {
-          const o = rand(w);
+        for (let i = 0; i < fx.n; i++) {
+          const o = fx.spread ? rand(0.4) : rand(w);
           const bx = t.x - tx * TOOL_LEN[t.kind] * 0.5 + tz * o, bz = t.y - tz * TOOL_LEN[t.kind] * 0.5 - tx * o;
-          if (v.working === 'plow') {
-            P.emit(bx, 0.15, bz, rand(0.5), 0.5 + Math.random() * 0.4, rand(0.5), { color: 0x8a6a48, life: 1.4, size: [0.25, 0.9], alpha: 0.45, gravity: -0.05 });
-          } else {
-            P.emit(bx, 0.2, bz, rand(0.3), 0.3, rand(0.3), { color: 0xd9c7a0, life: 0.8, size: [0.1, 0.3], alpha: 0.5 });
-          }
+          // Spreaders throw material sideways across their working width.
+          const side = fx.spread ? (Math.random() - 0.5) * fx.spread * 2 : rand(0.5);
+          P.emit(bx, fx.spread ? 0.35 : 0.18, bz, tz * side - tx * 0.4, fx.up * (0.6 + Math.random() * 0.6), -tx * side - tz * 0.4,
+            { color: fx.color, life: fx.life, size: fx.size, alpha: fx.alpha, gravity: fx.spread ? 2.5 : -0.05 });
         }
       }
     } else if (v.moving && Math.random() < 0.35) {
@@ -705,7 +820,7 @@ export class View3D implements ViewControls {
         { color: 0x6a6a6a, life: 1.1, size: [0.08, 0.4], alpha: 0.35, gravity: -0.1 });
     }
     // Grain stream from the combine pipe into the wagon.
-    if (v.kind === 'combine' && v.unloadingTo != null && Math.abs(view.pipeAngle - Math.PI / 2) < 0.2) {
+    if (isHarvester(v) && v.unloadingTo != null && Math.abs(view.pipeAngle - Math.PI / 2) < 0.2) {
       const tip = view.model.pipe!.localToWorld(new THREE.Vector3(1.9, -0.15, 0));
       const crop = this.sim.vehicle(v.unloadingTo) && this.sim.toolOf(this.sim.vehicle(v.unloadingTo)!)?.load.crop;
       for (let i = 0; i < 3; i++) {
@@ -731,7 +846,7 @@ export class View3D implements ViewControls {
     this.ring.visible = !!sel;
     this.route.visible = false;
     if (!sel) return;
-    const r = (sel.kind === 'combine' ? 1.8 : 1.2) * (1 + Math.sin(this.time * 6) * 0.05);
+    const r = (isHarvester(sel) ? 1.8 : 1.2) * (1 + Math.sin(this.time * 6) * 0.05);
     this.ring.scale.setScalar(r);
     this.ring.position.set(sel.x, 0.06, sel.y);
     const target = this.routeTarget(sel);

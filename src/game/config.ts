@@ -31,6 +31,7 @@ export const VEHICLE_SLOTS = [
 export const TOOL_SLOTS = [
   { x: 6, y: 57.5 }, { x: 9.5, y: 57.5 }, { x: 13, y: 57.5 },
   { x: 6, y: 60.5 }, { x: 9.5, y: 60.5 }, { x: 13, y: 60.5 },
+  { x: 10.6, y: 49.4 }, { x: 16.5, y: 57.5 }, { x: 16.5, y: 60.5 },
 ];
 
 export function slotPos(slots: { x: number; y: number }[], i: number) {
@@ -47,8 +48,8 @@ export const OFFLINE_RATE = 0.25; // fraction of 1x speed while the app is close
 export const OFFLINE_CAP_MIN = 2 * MINUTES_PER_DAY;
 
 // Order matters: saves store crops by index, so only append new crops.
-export type CropId = 'wheat' | 'corn' | 'soy' | 'barley' | 'oats' | 'canola' | 'sunflower';
-export const CROPS: CropId[] = ['wheat', 'corn', 'soy', 'barley', 'oats', 'canola', 'sunflower'];
+export type CropId = 'wheat' | 'corn' | 'soy' | 'barley' | 'oats' | 'canola' | 'sunflower' | 'potato' | 'sugarbeet';
+export const CROPS: CropId[] = ['wheat', 'corn', 'soy', 'barley', 'oats', 'canola', 'sunflower', 'potato', 'sugarbeet'];
 
 export interface CropDef {
   name: string;
@@ -58,6 +59,8 @@ export interface CropDef {
   seedCostPerCell: number; // $
   basePrice: number; // $ per 1000 L
   color: number; // grain color
+  /** Root crops need the root planter and root harvester instead of the seeder and combine. */
+  root?: boolean;
   /** 3D look: dense grain carpet or distinct rows, height in cells, and colors per growth stage. */
   look: {
     style: 'grain' | 'row';
@@ -82,14 +85,51 @@ export const CROP_DEFS: Record<CropId, CropDef> = {
     look: { style: 'grain', height: 0.55, stages: [0x6fb85a, 0x5aa850, 0xf5d62a, 0x6b6a33] } },
   sunflower: { name: 'Sunflowers', icon: '🌻', growDays: 3.5, yieldPerCell: 75, seedCostPerCell: 6, basePrice: 640, color: 0x3b3328,
     look: { style: 'row', height: 1.2, stages: [0x6cb44e, 0x4f9f3e, 0xf2c21b, 0x5e4a2a], stalks: true } },
+  potato: { name: 'Potatoes', icon: '🥔', growDays: 3, yieldPerCell: 320, seedCostPerCell: 14, basePrice: 145, color: 0xc9a36a, root: true,
+    look: { style: 'row', height: 0.38, stages: [0x6fb552, 0x58a546, 0x4a9a3e, 0x8f8440] } },
+  sugarbeet: { name: 'Sugar beets', icon: '🍠', growDays: 3.5, yieldPerCell: 380, seedCostPerCell: 9, basePrice: 115, color: 0xeadfca, root: true,
+    look: { style: 'row', height: 0.45, stages: [0x62ad4c, 0x4c9c42, 0x3f8f3a, 0x77a445] } },
 };
 
 export function emptyCropRecord<T>(value: () => T): Record<CropId, T> {
   return Object.fromEntries(CROPS.map(c => [c, value()])) as Record<CropId, T>;
 }
 
-export type VehicleKind = 'tractor' | 'combine';
-export type ToolKind = 'plow' | 'seeder' | 'wagon';
+export type VehicleKind = 'tractor' | 'combine' | 'rootHarvester';
+export type ToolKind = 'plow' | 'seeder' | 'wagon' | 'spreader' | 'roller' | 'weeder' | 'sprayer' | 'planter';
+
+/** Every field job. Tractor jobs name the implement they need. */
+export type Op = 'plow' | 'seed' | 'harvest' | 'fertilize' | 'lime' | 'roll' | 'weed' | 'spray';
+
+export const OP_DEFS: Record<Op, { name: string; verb: string; icon: string; tool?: ToolKind; costPerCell?: number; desc: string }> = {
+  plow: { name: 'Plow', verb: 'Plowing', icon: '⛏️', tool: 'plow', desc: 'Turns grass and stubble into soil. Clears weeds.' },
+  fertilize: { name: 'Fertilize', verb: 'Fertilizing', icon: '🧪', tool: 'spreader', costPerCell: 3, desc: 'Up to 2 passes per crop, +15% yield each.' },
+  lime: { name: 'Lime', verb: 'Liming', icon: '🪨', tool: 'spreader', costPerCell: 2, desc: 'Soil turns sour every few harvests. Unlimed soil loses 15%.' },
+  seed: { name: 'Seed', verb: 'Seeding', icon: '🌱', desc: 'Plant a crop on plowed soil.' },
+  roll: { name: 'Roll', verb: 'Rolling', icon: '🛞', tool: 'roller', desc: 'Firm the soil right after seeding for +5% yield.' },
+  weed: { name: 'Weed', verb: 'Weeding', icon: '🌿', tool: 'weeder', desc: 'Pulls weeds from young crops (first two growth stages).' },
+  spray: { name: 'Spray', verb: 'Spraying', icon: '💦', tool: 'sprayer', costPerCell: 2.5, desc: 'Herbicide kills weeds at any growth stage.' },
+  harvest: { name: 'Harvest', verb: 'Harvesting', icon: '🌾', desc: 'Collect a ripe crop.' },
+};
+
+export const FIXED_TOOL_WIDTH: Partial<Record<ToolKind | 'rootHeader', number>> = {
+  spreader: 6, roller: 4, weeder: 4, sprayer: 8, planter: 2, rootHeader: 2,
+};
+export const ROOT_TANK = 20000;
+export const ROOT_SPEED = 2.2;
+export const FERT_BONUS = 0.15;
+export const LIME_PENALTY = 0.15;
+export const WEED_PENALTY = 0.25;
+export const ROLL_BONUS = 0.05;
+export const LIME_HARVESTS = 3; // harvests before a cell needs lime again
+
+export type Weather = 'sun' | 'cloudy' | 'rain' | 'storm';
+export const WEATHER_DEFS: Record<Weather, { name: string; icon: string; next: [Weather, number][] }> = {
+  sun: { name: 'Sunny', icon: '☀️', next: [['sun', 0.45], ['cloudy', 0.4], ['rain', 0.15]] },
+  cloudy: { name: 'Cloudy', icon: '⛅', next: [['sun', 0.35], ['cloudy', 0.25], ['rain', 0.32], ['storm', 0.08]] },
+  rain: { name: 'Rain', icon: '🌧️', next: [['cloudy', 0.45], ['rain', 0.3], ['storm', 0.12], ['sun', 0.13]] },
+  storm: { name: 'Thunderstorm', icon: '⛈️', next: [['rain', 0.6], ['cloudy', 0.4]] },
+};
 
 // Vehicle geometry (cells). Tools hitch behind the tractor.
 export const TRACTOR_LEN = 1.6;
@@ -98,7 +138,9 @@ export const COMBINE_LEN = 2.4;
 export const COMBINE_WID = 1.5;
 export const HEADER_OFFSET = 1.55; // header center ahead of combine center
 export const HITCH_OFFSET = 0.8; // hitch point behind tractor center
-export const TOOL_LEN: Record<ToolKind, number> = { plow: 1.1, seeder: 1.1, wagon: 2.0 };
+export const TOOL_LEN: Record<ToolKind, number> = {
+  plow: 1.1, seeder: 1.1, wagon: 2.0, spreader: 1.0, roller: 1.0, weeder: 0.9, sprayer: 1.4, planter: 1.3,
+};
 export const WORK_SPEED_FACTOR = 0.7;
 export const COMBINE_WORK_FACTOR = 0.5;
 export const COMBINE_SPEED = 2.6;
@@ -137,6 +179,12 @@ export const SHOP_ITEMS: { id: VehicleKind | ToolKind; name: string; icon: strin
   { id: 'plow', name: 'Plow', icon: '⛏️', cost: 3000, desc: 'Turns grass and stubble into plowed soil.' },
   { id: 'seeder', name: 'Seeder', icon: '🌱', cost: 4500, desc: 'Plants wheat, corn or soybeans on plowed soil.' },
   { id: 'wagon', name: 'Grain wagon', icon: '🛒', cost: 3500, desc: 'Carries grain from combines to the silo or sell point.' },
+  { id: 'spreader', name: 'Spreader', icon: '🧪', cost: 5000, desc: 'Spreads fertilizer or lime, 6 rows wide.' },
+  { id: 'roller', name: 'Roller', icon: '🛞', cost: 3500, desc: 'Firms freshly seeded soil for a small yield bonus.' },
+  { id: 'weeder', name: 'Weeder', icon: '🌿', cost: 4000, desc: 'Pulls weeds from young crops for free.' },
+  { id: 'sprayer', name: 'Sprayer', icon: '💦', cost: 6500, desc: 'Sprays herbicide at any growth stage, 8 rows wide.' },
+  { id: 'planter', name: 'Root planter', icon: '🥔', cost: 9000, desc: 'Plants potatoes and sugar beets.' },
+  { id: 'rootHarvester', name: 'Root harvester', icon: '🚜', cost: 45000, desc: 'Self-propelled harvester for potatoes and sugar beets.' },
 ];
 
 export const START_MONEY = 6000;

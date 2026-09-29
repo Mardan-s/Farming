@@ -1,9 +1,10 @@
 import {
-  COMBINE_TANK, CROPS, CROP_DEFS, SHOP_ITEMS, SILO_CAP, SPEEDS, UPGRADES, parcelPrice, type CropId, type UpgradeId,
+  CROPS, CROP_DEFS, OP_DEFS, SHOP_ITEMS, SILO_CAP, SPEEDS, UPGRADES, WEATHER_DEFS, parcelPrice,
+  type CropId, type ToolKind, type UpgradeId,
 } from '../game/config';
 import type { Pt } from '../game/geometry';
 import { GOALS } from '../game/goals';
-import type { Game, Op, Vehicle } from '../game/sim';
+import { TOOL_NAMES, isHarvester, type Game, type Op, type Vehicle } from '../game/sim';
 import { parcelRect } from '../game/world';
 import { setMuted, sfx } from '../audio';
 import type { TapInfo, ViewControls, ViewHost } from '../render3d/types';
@@ -24,7 +25,11 @@ const $ = (sel: string) => document.querySelector(sel) as HTMLElement;
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
 const liters = (n: number) => `${Math.round(n).toLocaleString()} L`;
 const ha = (cells: number) => `${(cells * 0.01).toFixed(2)} ha`;
-const vIcon = (v: Vehicle) => (v.kind === 'tractor' ? '🚜' : '🌾');
+const vIcon = (v: Vehicle) => ({ tractor: '🚜', combine: '🌾', rootHarvester: '🥔' }[v.kind]);
+const TOOL_ICON: Record<ToolKind, string> = {
+  plow: '⛏️', seeder: '🌱', wagon: '🛒', spreader: '🧪', roller: '🛞', weeder: '🌿', sprayer: '💦', planter: '🥔',
+};
+const cap1 = (t: string) => t[0].toUpperCase() + t.slice(1);
 
 export class UI implements ViewHost {
   drawMode = false;
@@ -68,7 +73,7 @@ export class UI implements ViewHost {
     document.getElementById('ui')!.innerHTML = `
       <div id="top">
         <div class="chip money"><span id="money"></span></div>
-        <div class="chip clock"><span id="clock"></span></div>
+        <button class="chip btn clock" data-act="forecast"><span id="clock"></span></button>
         <button class="chip btn" data-act="speed" id="speed"></button>
         <div class="spacer"></div>
         <button class="chip btn icon" data-act="modal" data-arg="settings" aria-label="Settings">⚙️</button>
@@ -94,7 +99,8 @@ export class UI implements ViewHost {
     this.live.set('clock', () => {
       const t = this.sim.timeOfDay;
       const h = Math.floor(t / 60), m = Math.floor(t % 60);
-      const icon = h >= 6 && h < 19 ? '☀️' : '🌙';
+      const w = this.sim.weather;
+      const icon = w === 'sun' && (h < 6 || h >= 19) ? '🌙' : WEATHER_DEFS[w].icon;
       return `${icon} Day ${this.sim.day} · ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
     });
     this.live.set('speed', () => `⏩ ${SPEEDS[this.sim.speedIdx]}x`);
@@ -109,7 +115,7 @@ export class UI implements ViewHost {
 
     if (info.vehicleId != null) {
       const tapped = this.sim.vehicle(info.vehicleId)!;
-      if (selV && selV.kind === 'tractor' && tapped.kind === 'combine') {
+      if (selV && selV.kind === 'tractor' && isHarvester(tapped)) {
         sfx.tap();
         this.setPanel({ kind: 'combineTarget', tid: selV.id, cid: tapped.id });
         return;
@@ -183,6 +189,13 @@ export class UI implements ViewHost {
         break;
       case 'zoom': this.view.zoomBy(parseFloat(arg)); break;
       case 'rotate': this.view.rotateBy(parseFloat(arg)); break;
+      case 'forecast': {
+        const hours = Math.max(1, Math.round((sim.weatherChangeAt - sim.clock) / 60));
+        const now = WEATHER_DEFS[sim.weather], next = WEATHER_DEFS[sim.weatherNext];
+        this.toast(`${now.icon} ${now.name} now · ${next.icon} ${next.name} in about ${hours} h`, 'info');
+        sfx.tap();
+        return;
+      }
       case 'home': this.view.centerOnCells(14, 52); break;
       case 'modal': sfx.tap(); this.openModal(arg as Modal); return;
       case 'closeModal': sfx.tap(); this.modal = null; this.render(true); return;
@@ -439,6 +452,19 @@ export class UI implements ViewHost {
         return String(s.ready ? 100 : s.growthPct);
       };
       case 'silo': return () => liters(sim.silo[idStr as CropId] ?? 0);
+      case 'fsoil': return () => {
+        const f = sim.world.fields.get(id);
+        if (!f) return '';
+        const s = f.summary(sim.clock);
+        const pct = (n: number) => Math.round((n / s.total) * 100);
+        return [
+          `📊 Yield ${s.yieldPct}%`,
+          `🧪 Fertilizer ${s.fertAvg.toFixed(1)}/2`,
+          s.needLime ? `🪨 Needs lime ${pct(s.needLime)}%` : '🪨 Lime OK',
+          s.weedy ? `🌿 Weeds ${pct(s.weedy)}%` : '🌿 No weeds',
+          s.rolled ? `🛞 Rolled ${pct(s.rolled)}%` : '',
+        ].filter(Boolean).join(' · ');
+      };
     }
     return undefined;
   }
@@ -506,10 +532,10 @@ export class UI implements ViewHost {
         if (!v) return '';
         const tool = sim.toolOf(v);
         const cargo = sim.cargoOf(v);
-        const toolName = tool ? { plow: '⛏️ Plow', seeder: '🌱 Seeder', wagon: '🛒 Grain wagon' }[tool.kind] : 'No tool';
+        const toolName = tool ? `${TOOL_ICON[tool.kind]} ${cap1(TOOL_NAMES[tool.kind])}` : 'No tool';
         const hint = v.kind === 'tractor'
-          ? 'Tap a field to plow or seed it · tap a combine to haul its grain'
-          : 'Tap a field with a ripe crop to harvest it';
+          ? 'Tap a field for field work · tap a harvester to haul its crop'
+          : v.kind === 'rootHarvester' ? 'Tap a field with ripe potatoes or sugar beets' : 'Tap a field with a ripe grain crop';
         return `
           <div class="sheet">
             <div class="title">${vIcon(v)} ${v.name} ${v.kind === 'tractor' ? `<span class="muted">${toolName}</span>` : ''}
@@ -522,7 +548,7 @@ export class UI implements ViewHost {
               <button data-act="park">🏠 Park</button>
               ${cargo ? `<button data-act="deliver">⬇️ ${sim.deliverTo === 'sell' ? 'Sell' : 'To silo'}</button>` : ''}
               ${v.kind === 'tractor' && tool ? '<button data-act="unhitch">🔗 Unhitch</button>' : ''}
-              ${v.kind === 'combine' ? `<button data-act="autoUnload" class="${v.autoUnload ? 'on' : ''}">🚜 Auto-haul ${v.autoUnload ? 'ON' : 'OFF'}</button>` : ''}
+              ${isHarvester(v) ? `<button data-act="autoUnload" class="${v.autoUnload ? 'on' : ''}">🚜 Auto-haul ${v.autoUnload ? 'ON' : 'OFF'}</button>` : ''}
             </div>
           </div>`;
       }
@@ -533,35 +559,41 @@ export class UI implements ViewHost {
         const opts: string[] = [];
         const btn = (op: Op, label: string, crop?: CropId) => {
           const c = sim.checkFieldOp(v, f, op, crop);
+          const cost = OP_DEFS[op].costPerCell;
           const sub = c.ok
-            ? op === 'seed' && crop ? `${ha(c.cells)} · ~${money(c.cells * CROP_DEFS[crop].seedCostPerCell)} seed`
-              : op === 'harvest' && c.crop ? `${CROP_DEFS[c.crop].name} · ${ha(c.cells)}` : ha(c.cells)
+            ? op === 'harvest' && c.crop ? `${CROP_DEFS[c.crop].name} · ${ha(c.cells)}`
+              : cost ? `${ha(c.cells)} · ~${money(c.cells * cost)}` : ha(c.cells)
             : c.reason;
           return `<button class="job ${c.ok ? '' : 'off'}" data-act="job" data-arg="${op}:${crop ?? ''}" ${c.ok ? '' : 'disabled'}>
             <b>${label}</b><small>${sub}</small></button>`;
         };
         let seeds = '';
         if (v.kind === 'tractor') {
-          opts.push(btn('plow', '⛏️ Plow'));
+          for (const op of ['plow', 'fertilize', 'lime', 'roll', 'weed', 'spray'] as Op[]) {
+            opts.push(btn(op, `${OP_DEFS[op].icon} ${OP_DEFS[op].name}`));
+          }
           const general = sim.checkFieldOp(v, f, 'seed');
           const crops = CROPS.map(c => {
             const d = CROP_DEFS[c];
-            const ok = general.ok && sim.checkFieldOp(v, f, 'seed', c).ok;
+            const check = sim.checkFieldOp(v, f, 'seed', c);
+            const ok = general.ok && check.ok;
+            const sub = general.ok && !check.ok ? (d.root ? 'Needs root planter' : check.reason) : `${d.growDays} days · ${money(sim.prices[c])}`;
             return `<button class="crop" data-act="job" data-arg="seed:${c}" ${ok ? '' : 'disabled'}>
               <span class="ico">${d.icon}</span><b>${d.name}</b>
-              <small>${d.growDays} days · ${money(sim.prices[c])}</small></button>`;
+              <small>${sub}</small></button>`;
           }).join('');
           seeds = `<div class="hint">🌱 Seed ${general.ok ? `${ha(general.cells)} — pick a crop (grow time · price per 1000 L):` : `— ${general.reason}`}</div>
             <div class="crops">${crops}</div>`;
         } else {
-          opts.push(btn('harvest', '🌾 Harvest'));
+          opts.push(btn('harvest', `${vIcon(v)} Harvest`));
         }
         return `
           <div class="sheet">
             <div class="title"><button class="x left" data-act="back" aria-label="Back">‹</button>
               ${vIcon(v)} ${v.name} → Field ${f.id} <span class="muted">${ha(f.cells.length)}</span></div>
             <div class="status" data-live="fstate:${f.id}"></div>
-            <div class="jobs">${opts.join('')}</div>
+            <div class="soil" data-live="fsoil:${f.id}"></div>
+            <div class="jobs ${v.kind === 'tractor' ? 'small-jobs' : ''}">${opts.join('')}</div>
             ${seeds}
           </div>`;
       }
@@ -571,7 +603,7 @@ export class UI implements ViewHost {
         return `
           <div class="sheet">
             <div class="title"><button class="x left" data-act="back" aria-label="Back">‹</button>🚜 ${t.name} → ${c.name}</div>
-            <div class="status">${c.tank.amount > 0 && c.tank.crop ? `Tank: ${CROP_DEFS[c.tank.crop].icon} ${liters(c.tank.amount)} / ${liters(COMBINE_TANK[sim.upgrades.header])}` : 'Tank is empty (the tractor will wait beside it)'}</div>
+            <div class="status">${c.tank.amount > 0 && c.tank.crop ? `Tank: ${CROP_DEFS[c.tank.crop].icon} ${liters(c.tank.amount)} / ${liters(sim.cargoOf(c)!.cap)}` : 'Tank is empty (the tractor will wait beside it)'}</div>
             <div class="jobs">
               <button class="job" data-act="unloadCombine"><b>🛒 Haul grain</b><small>Hitch the wagon, follow the combine, then ${sim.deliverTo === 'sell' ? 'sell' : 'store in the silo'}</small></button>
               <button class="job" data-act="selectCombine"><b>🌾 Select ${c.name}</b><small>Give the combine orders instead</small></button>
@@ -589,6 +621,7 @@ export class UI implements ViewHost {
               <button class="x" data-act="close" aria-label="Close">✕</button></div>
             <div class="status" data-live="fstate:${f.id}"></div>
             <div class="bar grow"><div data-live="fbar:${f.id}" data-bar></div></div>
+            <div class="soil" data-live="fsoil:${f.id}"></div>
             <div class="hint">Send a machine to this field:</div>
             <div class="row wrap">${machines}</div>
             <div class="row"><button class="danger" data-act="deleteField">🗑️ Delete field</button></div>
@@ -648,6 +681,7 @@ export class UI implements ViewHost {
             <li>When the crop turns golden, <b>tap the combine</b> and harvest.</li>
             <li>Your tractor hauls the grain to the <b>sell point</b> automatically. 💰</li>
           </ol>
+          <p class="muted">Want bigger harvests? Fertilize twice, lime the soil every few harvests, roll after seeding, and keep weeds out. Potatoes and sugar beets need their own planter and harvester.</p>
           <p class="muted">Machines drive themselves. Crops keep growing (slower) while you're away.</p>
           <button class="primary wide" data-act="closeModal">Let's farm!</button>
         </div>`;
@@ -661,7 +695,7 @@ export class UI implements ViewHost {
               <span class="grow"><b>${v.name}</b><small data-live="vstatus:${v.id}"></small>
               ${c ? `<small data-live="vcargo:${v.id}"></small>` : ''}</span><span>›</span></button>`;
           }).join('')}</div>
-          <div class="muted small">Tools: ${sim.tools.map(t => ({ plow: '⛏️', seeder: '🌱', wagon: '🛒' }[t.kind])).join(' ')}</div>
+          <div class="muted small">Tools: ${sim.tools.map(t => TOOL_ICON[t.kind]).join(' ')}</div>
         </div>`;
       case 'shop': {
         const tabs = `<div class="tabs">
@@ -670,7 +704,7 @@ export class UI implements ViewHost {
         let body = '';
         if (this.shopTab === 'vehicles') {
           body = SHOP_ITEMS.map(it => {
-            const owned = it.id === 'tractor' || it.id === 'combine'
+            const owned = it.id === 'tractor' || it.id === 'combine' || it.id === 'rootHarvester'
               ? sim.vehicles.filter(v => v.kind === it.id).length
               : sim.tools.filter(t => t.kind === it.id).length;
             return `<div class="item">

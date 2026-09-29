@@ -11,6 +11,16 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 5. **Harvest.** When the field turns golden, tap the combine and then the field.
 6. **Haul and sell.** When the combine's tank fills up, a free tractor hitches the grain wagon, drives beside the combine to catch the grain, and takes it to the sell point, or to your silo if you chose that in the Market.
 
+**Field care** raises your yield. The field panel shows it as a percentage:
+- 🧪 **Fertilize** (spreader): up to 2 passes per crop, +15% each.
+- 🪨 **Lime** (spreader): soil turns sour every few harvests; unlimed soil loses 15%.
+- 🛞 **Roll** (roller): right after seeding, +5%.
+- 🌿 **Weeds** spread into growing crops and cost 25%. Pull them with a **weeder** while the crop is young, or use a **sprayer** at any stage.
+
+**Root crops:** potatoes and sugar beets need the **root planter** and the self-propelled **root harvester**. Tractors borrow implements from other parked tractors automatically.
+
+**Weather:** sun, clouds, rain and thunderstorms roll through. Tap the clock for the forecast.
+
 Grow the farm: buy **land plots**, more **machines**, and **upgrades** (wider plows and seeders, bigger combine tanks and wagons, faster tractors). The **market** price for each crop changes daily. Store grain in the silo and sell when prices spike.
 
 Controls: drag to pan, pinch or scroll to zoom, twist two fingers (or use ⟲ ⟳) to rotate, and ⏩ to speed up time.

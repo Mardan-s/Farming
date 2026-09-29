@@ -30,7 +30,61 @@ function tone(freq: number, dur: number, type: OscillatorType, vol: number, dela
   osc.stop(t + dur + 0.02);
 }
 
+let noiseBuf: AudioBuffer | null = null;
+function noise() {
+  if (!ctx) return null;
+  if (!noiseBuf) {
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
+  return noiseBuf;
+}
+
+let rain: { gain: GainNode } | null = null;
+
+/** Continuous rain hiss; level 0 turns it off. */
+export function setRain(level: number) {
+  if (!ctx) return;
+  const buf = noise();
+  if (!buf) return;
+  if (!rain) {
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 1400;
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    src.connect(filter).connect(gain).connect(ctx.destination);
+    src.start();
+    rain = { gain };
+  }
+  rain.gain.gain.setTargetAtTime(muted ? 0 : level * 0.05, ctx.currentTime, 0.8);
+}
+
+function thunder() {
+  if (!ctx || muted) return;
+  const buf = noise();
+  if (!buf) return;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 220;
+  const gain = ctx.createGain();
+  const t = ctx.currentTime;
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.5, t + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
+  src.connect(filter).connect(gain).connect(ctx.destination);
+  src.start(t);
+  src.stop(t + 2.3);
+}
+
 export const sfx = {
+  thunder,
   tap: () => tone(660, 0.06, 'sine', 0.08),
   select: () => { tone(520, 0.07, 'triangle', 0.1); tone(780, 0.09, 'triangle', 0.08, 0.05); },
   confirm: () => { tone(440, 0.08, 'triangle', 0.1); tone(660, 0.08, 'triangle', 0.1, 0.07); tone(880, 0.12, 'triangle', 0.09, 0.14); },

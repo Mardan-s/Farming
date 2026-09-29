@@ -264,6 +264,11 @@ button.wide { width: 100%; margin-top: 8px; }
 .crops { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 6px; }
 .crop { display: grid; grid-template-columns: auto 1fr; column-gap: 6px; align-items: center; text-align: left; padding: 6px 8px; min-height: 48px; }
 .crop .ico { grid-row: span 2; font-size: 20px; }
-.crop b, .crop small { min-width: 0; overflow-wrap: anywhere; }
-.crop b { font-size: 12.5px; }
+.crop b, .crop small { min-width: 0; overflow-wrap: break-word; }
+.crop b { font-size: 11.5px; letter-spacing: -0.01em; }
 .crop small { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.soil { font-size: 12.5px; color: var(--muted); margin: 4px 0; line-height: 1.5; }
+.jobs.small-jobs { grid-template-columns: repeat(3, 1fr); }
+.jobs.small-jobs .job { padding: 7px 8px; min-height: 52px; }
+.jobs.small-jobs .job b { font-size: 13.5px; }
+.jobs.small-jobs .job small { font-size: 11px; overflow-wrap: anywhere; }

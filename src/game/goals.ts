@@ -9,10 +9,13 @@ export interface Stats {
   parcels: number;
   fields: number;
   vehiclesBought: number;
+  fertilized: number;
+  limed: number;
+  weeded: number;
 }
 
 export function newStats(): Stats {
-  return { plowed: 0, seeded: 0, harvested: 0, soldLiters: 0, earned: 0, cropsHarvested: [], upgrades: 0, parcels: 1, fields: 0, vehiclesBought: 0 };
+  return { plowed: 0, seeded: 0, harvested: 0, soldLiters: 0, earned: 0, cropsHarvested: [], upgrades: 0, parcels: 1, fields: 0, vehiclesBought: 0, fertilized: 0, limed: 0, weeded: 0 };
 }
 
 export interface Goal {
@@ -32,5 +35,8 @@ export const GOALS: Goal[] = [
   { title: 'Buy an upgrade', hint: 'Shop → Upgrades makes your machines wider and faster.', reward: 1500, progress: s => [s.upgrades, 1] },
   { title: 'Harvest 4 different crops', hint: 'Try barley, oats, canola or sunflowers — each has its own price.', reward: 3000, progress: s => [s.cropsHarvested.length, 4] },
   { title: 'Grow your fleet', hint: 'Buy a second tractor or combine to work in parallel.', reward: 4000, progress: s => [s.vehiclesBought, 1] },
+  { title: 'Fertilize a field', hint: 'Buy a spreader. Two fertilizer passes give +30% yield.', reward: 2000, progress: s => [Math.min(s.fertilized, 60), 60] },
+  { title: 'Deal with weeds', hint: 'Weeds cost 25% yield. Use a weeder on young crops or a sprayer.', reward: 2000, progress: s => [Math.min(s.weeded, 60), 60] },
+  { title: 'Grow a root crop', hint: 'Potatoes and sugar beets need a root planter and root harvester.', reward: 8000, progress: s => [s.cropsHarvested.some(c => c === 'potato' || c === 'sugarbeet') ? 1 : 0, 1] },
   { title: 'Earn $100,000', hint: 'Watch the market — sell when prices are high.', reward: 10000, progress: s => [Math.min(s.earned, 100000), 100000] },
 ];

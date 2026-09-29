@@ -16,6 +16,8 @@ interface Chunk {
 export class Ground {
   readonly group = new THREE.Group();
   private chunks: Chunk[] = [];
+  private mats: THREE.MeshLambertMaterial[] = [];
+  private wetness = -1;
   private cols = Math.ceil(MAP_W / CHUNK);
   private current = new Int16Array(MAP_W * MAP_H).fill(-1);
 
@@ -31,7 +33,9 @@ export class Ground {
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = anisotropy;
-        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshLambertMaterial({ map: tex }));
+        const mat = new THREE.MeshLambertMaterial({ map: tex });
+        this.mats.push(mat);
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
         mesh.rotation.x = -Math.PI / 2;
         mesh.position.set(x0 + w / 2, 0, y0 + h / 2);
         mesh.receiveShadow = true;
@@ -57,6 +61,15 @@ export class Ground {
     const c = this.chunks[Math.floor(y / CHUNK) * this.cols + Math.floor(x / CHUNK)];
     c.ctx.drawImage(this.tiles[tileId], (x - c.x0) * TILE, (y - c.y0) * TILE);
     c.dirty = true;
+  }
+
+  /** Darkens the ground after rain (0 dry .. 1 soaked). */
+  setWetness(w: number) {
+    const q = Math.round(w * 50) / 50;
+    if (q === this.wetness) return;
+    this.wetness = q;
+    const shade = 1 - 0.3 * q;
+    for (const m of this.mats) m.color.setRGB(shade, shade, shade * 1.02);
   }
 
   /** Uploads changed chunks to the GPU; call once per frame. */

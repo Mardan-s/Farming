@@ -78,7 +78,9 @@ describe('full farming loop', () => {
     expect(done).toBe(true);
     expect(field.state.every(s => s === CellState.Stubble)).toBe(true);
     expect(game.stats.earned).toBeGreaterThan(earnedBefore);
-    expect(game.stats.soldLiters).toBeCloseTo(120 * 95, 0);
+    // Some cells grew weeds while we skipped ahead, costing up to 25% on those cells.
+    expect(game.stats.soldLiters).toBeGreaterThan(120 * 95 * 0.75);
+    expect(game.stats.soldLiters).toBeLessThanOrEqual(120 * 95 + 1);
   });
 
   it('round-trips through a save', () => {
@@ -100,5 +102,108 @@ describe('full farming loop', () => {
     expect(offline.minutes).toBe(2 * MINUTES_PER_DAY);
     expect(loaded.day).toBe(game.day + 2);
     expect(loaded.priceHistory.wheat.length).toBe(3);
+  });
+});
+
+describe('field care', () => {
+  function readyField(game: Game) {
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    return f;
+  }
+
+  it('fertilizer, lime, rolling and weeds change the harvest', () => {
+    const game = new Game();
+    game.money = 1e6;
+    const f = readyField(game);
+    const tractor = game.vehicles[0];
+    const combine = game.vehicles.find(v => v.kind === 'combine')!;
+    game.buyItem('spreader');
+    game.buyItem('roller');
+    game.buyItem('sprayer');
+
+    const job = (op: Parameters<Game['orderFieldOp']>[2], crop?: Parameters<Game['orderFieldOp']>[3], level?: number) => {
+      expect(game.orderFieldOp(tractor.id, f.id, op, crop)).toBeNull();
+      expect(run(game, 900, () => game.eligibleCount(f, op, undefined, level) === 0)).toBe(true);
+    };
+    job('plow');
+    job('fertilize', undefined, 1);
+    expect(f.fert.every(x => x === 1)).toBe(true);
+    job('fertilize');
+    expect(game.checkFieldOp(tractor, f, 'fertilize').ok).toBe(false);
+    job('seed', 'wheat');
+    job('roll');
+    job('spray');
+    expect(f.fert.every(x => x === 2)).toBe(true);
+    // Soil still limed (2 harvests left), fertilized x2, rolled, weed-free: 1 + 0.3 + 0.05.
+    expect(f.yieldFactor(0)).toBeCloseTo(1.35);
+
+    game.clock += 3 * MINUTES_PER_DAY;
+    expect(game.orderFieldOp(combine.id, f.id, 'harvest')).toBeNull();
+    run(game, 1500, () => game.eligibleCount(f, 'harvest', 'wheat') === 0 && combine.tank.amount === 0 && tractor.steps.length === 0);
+    expect(game.stats.soldLiters).toBeCloseTo(120 * 95 * 1.35, 0);
+    // Season care resets, lime wears down.
+    expect(f.fert[0]).toBe(0);
+    expect(f.lime[0]).toBe(1);
+  });
+
+  it('weeds appear in unprotected crops and cost yield', () => {
+    const game = new Game();
+    const f = readyField(game);
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 0; f.planted[i] = game.clock; }
+    game.clock += 1.2 * MINUTES_PER_DAY; // past growth stage 2 for wheat
+    run(game, 1.2);
+    const weedy = f.cells.filter((_, i) => f.weeds[i] === 1).length;
+    expect(weedy).toBeGreaterThan(f.cells.length * 0.4);
+    const i = f.cells.findIndex((_, k) => f.weeds[k] === 1);
+    expect(f.yieldFactor(i)).toBeCloseTo(0.75);
+  });
+
+  it('root crops need the root planter and root harvester', () => {
+    const game = new Game();
+    game.money = 1e6;
+    const f = readyField(game);
+    const tractor = game.vehicles[0];
+    const combine = game.vehicles.find(v => v.kind === 'combine')!;
+    f.state.fill(1);
+    expect(game.checkFieldOp(tractor, f, 'seed', 'potato').reason).toMatch(/root planter/);
+    game.buyItem('planter');
+    expect(game.orderFieldOp(tractor.id, f.id, 'seed', 'potato')).toBeNull();
+    run(game, 900, () => game.eligibleCount(f, 'seed') === 0);
+    expect(game.toolOf(tractor)?.kind).toBe('planter');
+    game.clock += 4 * MINUTES_PER_DAY;
+    expect(game.checkFieldOp(combine, f, 'harvest').reason).toMatch(/root harvester/);
+    game.buyItem('rootHarvester');
+    const rh = game.vehicles.find(v => v.kind === 'rootHarvester')!;
+    expect(game.orderFieldOp(rh.id, f.id, 'harvest')).toBeNull();
+    run(game, 1500, () => game.eligibleCount(f, 'harvest') === 0 && rh.tank.amount === 0 && tractor.steps.length === 0);
+    expect(game.stats.cropsHarvested).toContain('potato');
+    expect(game.stats.soldLiters).toBeGreaterThan(0);
+  });
+
+  it('weather changes over time', () => {
+    const game = new Game();
+    const seen = new Set<string>();
+    for (let d = 0; d < 20; d++) { game.clock += 180; game.update(0.01); seen.add(game.weather); }
+    expect(seen.size).toBeGreaterThan(1);
+  });
+});
+
+describe('sharing implements', () => {
+  it('borrows an implement from a parked tractor', () => {
+    const game = new Game();
+    game.money = 1e6;
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    game.buyItem('tractor');
+    const [t1, , t2] = game.vehicles;
+    expect(game.orderFieldOp(t1.id, f.id, 'plow')).toBeNull();
+    run(game, 900, () => game.eligibleCount(f, 'plow') === 0 && t1.steps.length === 0);
+    expect(game.toolOf(t1)?.kind).toBe('plow');
+    f.state.fill(3); // stubble again
+    expect(game.orderFieldOp(t2.id, f.id, 'plow')).toBeNull();
+    run(game, 900, () => game.eligibleCount(f, 'plow') === 0);
+    expect(game.toolOf(t2)?.kind).toBe('plow');
+    expect(game.toolOf(t1)).toBeUndefined();
   });
 });
