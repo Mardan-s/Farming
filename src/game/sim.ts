@@ -18,6 +18,8 @@ export type Dest = 'silo' | 'sell';
 
 export interface Cargo { crop: CropId | null; amount: number }
 
+export interface Need { op: Op; priority: number; why: string }
+
 export interface Waypoint { x: number; y: number; work?: { axis: Axis; start: number; width: number } }
 
 export type Step =
@@ -779,6 +781,53 @@ export class Game {
     }
     v.steps = [...pre, { t: 'work', op, fieldId, crop: check.crop, level }, { t: 'park' }];
     return null;
+  }
+
+  /** What a field needs right now, most important first. Only jobs that are possible now. */
+  fieldNeeds(f: Field): Need[] {
+    const s = f.summary(this.clock);
+    const pct = (n: number) => Math.round((n / s.total) * 100);
+    const needs: Need[] = [];
+    const can = (op: Op) => this.eligibleCount(f, op) > 0;
+    if (s.ready) needs.push({ op: 'harvest', priority: 100, why: `${pct(s.ready)}% is ripe and ready` });
+    if (can('seed')) needs.push({ op: 'seed', priority: 90, why: 'Plowed and ready to plant' });
+    if (s.weedy && (can('weed') || can('spray'))) {
+      const op = can('weed') && this.tools.some(t => t.kind === 'weeder') ? 'weed' : 'spray';
+      needs.push({ op, priority: 85, why: `Weeds on ${pct(s.weedy)}% — costing 25% of that harvest` });
+    }
+    if (can('plow')) needs.push({ op: 'plow', priority: 80, why: s.grass ? 'Grass — plow it before planting' : 'Stubble — plow for the next crop' });
+    if (can('lime')) needs.push({ op: 'lime', priority: s.growing ? 50 : 75, why: `Soil is sour on ${pct(s.needLime)}% — losing 15%` });
+    if (can('fertilize')) needs.push({ op: 'fertilize', priority: 60, why: `Fertilizer ${s.fertAvg.toFixed(1)} of 2 passes — +15% each` });
+    if (can('roll')) needs.push({ op: 'roll', priority: 55, why: 'Just planted — roll it for +5%' });
+    if (!s.weedy && s.growing) {
+      const op = can('weed') && this.tools.some(t => t.kind === 'weeder') ? 'weed' : can('spray') ? 'spray' : null;
+      if (op) needs.push({ op, priority: 40, why: 'Stop weeds before they spread' });
+    }
+    return needs.sort((a, b) => b.priority - a.priority);
+  }
+
+  /** Picks the best free machine for a job, or explains what's missing. */
+  bestVehicleFor(f: Field, op: Op, crop?: CropId): { vehicle?: Vehicle; reason?: string; buy?: VehicleKind | ToolKind } {
+    const wantsRoot = op === 'harvest'
+      ? CROPS.some(c => CROP_DEFS[c].root && f.summary(this.clock).readyCounts[c] > 0)
+        && !CROPS.some(c => !CROP_DEFS[c].root && f.summary(this.clock).readyCounts[c] > 0)
+      : false;
+    const kind: VehicleKind = op === 'harvest' ? (wantsRoot ? 'rootHarvester' : 'combine') : 'tractor';
+    const fleet = this.vehicles.filter(v => v.kind === kind);
+    if (fleet.length === 0) return { reason: `You need a ${VEHICLE_NAMES[kind].toLowerCase()}`, buy: kind };
+    const tool = kind === 'tractor' ? toolForOp(op, crop) : undefined;
+    if (tool && !this.tools.some(t => t.kind === tool)) return { reason: `You need a ${TOOL_NAMES[tool]}`, buy: tool };
+    let best: Vehicle | undefined;
+    let bestScore = Infinity;
+    let lastReason = '';
+    for (const v of fleet) {
+      const check = this.checkFieldOp(v, f, op, crop);
+      if (!check.ok) { lastReason = check.reason ?? ''; continue; }
+      if (!this.isIdle(v)) { lastReason = `All ${VEHICLE_NAMES[kind].toLowerCase()}s are busy`; continue; }
+      const score = dist(v, f.center) - (tool && this.toolOf(v)?.kind === tool ? 30 : 0);
+      if (score < bestScore) { best = v; bestScore = score; }
+    }
+    return best ? { vehicle: best } : { reason: lastReason || 'No machine can do this now' };
   }
 
   orderUnloadCombine(tid: number, cid: number): string | null {

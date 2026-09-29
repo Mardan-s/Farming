@@ -1,14 +1,21 @@
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { COMBINE_LEN, COMBINE_WID, HEADER_OFFSET, TOOL_LEN, type ToolKind } from '../game/config';
 
 // Low-poly models built from primitives. Every model faces +x; 1 unit = 1 grid cell.
 
-const mats = new Map<string, THREE.MeshLambertMaterial>();
-export function mat(color: number, emissive = 0) {
-  const key = `${color}-${emissive}`;
+const mats = new Map<string, THREE.MeshStandardMaterial>();
+/** Painted metal by default; dark colors read as rubber/plastic. */
+export function mat(color: number, roughness?: number, metalness?: number) {
+  const c = new THREE.Color(color);
+  const dark = c.r + c.g + c.b < 0.35;
+  const r = roughness ?? (dark ? 0.85 : 0.45);
+  const m0 = metalness ?? (dark ? 0 : 0.25);
+  const key = `${color}-${r}-${m0}`;
   let m = mats.get(key);
   if (!m) {
-    m = new THREE.MeshLambertMaterial({ color, emissive, flatShading: true });
+    m = new THREE.MeshStandardMaterial({ color, roughness: r, metalness: m0 });
     mats.set(key, m);
   }
   return m;
@@ -34,18 +41,29 @@ function cyl(parent: THREE.Object3D, r: number, len: number, color: number, x: n
   return mesh;
 }
 
-/** A tire with a colored hub; returned group spins around z to roll. */
+/** Rounded box, for painted body panels. */
+export function rbox(parent: THREE.Object3D, w: number, h: number, d: number, radius: number, color: number | THREE.Material, x: number, y: number, z: number) {
+  const m = typeof color === 'number' ? mat(color) : color;
+  return add(parent, new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 2, Math.min(radius, w / 2, h / 2, d / 2)), m), x, y, z);
+}
+
+/** A tire with a metal rim and tread lugs; the returned group spins around z to roll. */
 function wheel(parent: THREE.Object3D, r: number, width: number, x: number, z: number, hub: number) {
   const g = new THREE.Group();
   g.position.set(x, r, z);
   parent.add(g);
-  cyl(g, r, width, 0x1d1d1d, 0, 0, 0, 'z', 16);
-  cyl(g, r * 0.55, width * 1.04, hub, 0, 0, 0, 'z', 10);
-  // Tread blocks make rolling visible.
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    const t = box(g, r * 0.25, r * 0.12, width * 1.06, 0x2c2c2c, Math.cos(a) * r * 0.93, Math.sin(a) * r * 0.93, 0);
-    t.rotation.z = a;
+  cyl(g, r * 0.93, width, 0x1b1b1b, 0, 0, 0, 'z', 24);
+  cyl(g, r * 0.6, width * 1.02, hub, 0, 0, 0, 'z', 16).material = mat(hub, 0.35, 0.6);
+  cyl(g, r * 0.22, width * 1.08, 0x9a9a9a, 0, 0, 0, 'z', 10).material = mat(0x9a9a9a, 0.3, 0.9);
+  const lugs = Math.max(10, Math.round(r * 40));
+  for (let i = 0; i < lugs; i++) {
+    const a = (i / lugs) * Math.PI * 2;
+    for (const side of [-1, 1]) {
+      const t = box(g, r * 0.16, r * 0.1, width * 0.46, 0x242424, Math.cos(a) * r * 0.95, Math.sin(a) * r * 0.95, side * width * 0.25);
+      t.rotation.z = a;
+      t.rotation.y = side * 0.35; // chevron tread
+      t.castShadow = false;
+    }
   }
   g.userData.radius = r;
   return g;
@@ -53,18 +71,43 @@ function wheel(parent: THREE.Object3D, r: number, width: number, x: number, z: n
 
 const GLASS = 0x9fd3ea;
 const LIGHT_OFF = 0xfff4c2;
+const glassMat = () => new THREE.MeshStandardMaterial({ color: 0x5f8aa0, transparent: true, opacity: 0.55, roughness: 0.05, metalness: 0.9 });
 
 function headlights(parent: THREE.Object3D, x: number, y: number, zs: number[]) {
-  const m = new THREE.MeshLambertMaterial({ color: LIGHT_OFF, emissive: 0xffe9a0, emissiveIntensity: 0 });
+  const m = new THREE.MeshStandardMaterial({ color: LIGHT_OFF, emissive: 0xffe9a0, emissiveIntensity: 0, roughness: 0.2 });
   for (const z of zs) box(parent, 0.04, 0.07, 0.1, m, x, y, z).castShadow = false;
   return m;
+}
+
+/** Curved mudguard over a wheel. */
+function fender(parent: THREE.Object3D, r: number, width: number, x: number, y: number, z: number, color: number) {
+  const geo = new THREE.CylinderGeometry(r, r, width, 16, 1, true, -Math.PI / 2, Math.PI);
+  const m = new THREE.Mesh(geo, mat(color));
+  (m.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+  m.rotation.x = Math.PI / 2;
+  return add(parent, m, x, y, z);
+}
+
+/** Cab: pillars, tinted glass, roof with an amber beacon, mirrors. */
+function cab(parent: THREE.Object3D, x: number, y: number, w: number, h: number, d: number, roof: number) {
+  add(parent, new THREE.Mesh(new RoundedBoxGeometry(w * 0.96, h, d * 0.96, 2, 0.04), glassMat()), x, y + h / 2, 0);
+  for (const [px, pz] of [[-1, -1], [-1, 1], [1, -1], [1, 1]]) {
+    cyl(parent, 0.022, h, 0x1e1e1e, x + (px * w) / 2, y + h / 2, (pz * d) / 2, 'y', 6);
+  }
+  rbox(parent, w + 0.1, 0.07, d + 0.1, 0.03, roof, x, y + h + 0.035, 0);
+  const beacon = add(parent, new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.06, 10), new THREE.MeshStandardMaterial({ color: 0xff9a1f, emissive: 0xff7a00, emissiveIntensity: 0.4 })), x - w * 0.3, y + h + 0.1, d * 0.3);
+  beacon.castShadow = false;
+  for (const side of [-1, 1]) {
+    box(parent, 0.02, 0.02, 0.12, 0x1e1e1e, x + w * 0.45, y + h * 0.75, side * (d / 2 + 0.06));
+    box(parent, 0.02, 0.1, 0.06, 0x1e1e1e, x + w * 0.45, y + h * 0.7, side * (d / 2 + 0.13));
+  }
 }
 
 export interface VehicleModel {
   root: THREE.Group;
   body: THREE.Group;
   wheels: THREE.Group[];
-  lights: THREE.MeshLambertMaterial;
+  lights: THREE.MeshStandardMaterial;
   header?: THREE.Group;
   reel?: THREE.Object3D;
   pipe?: THREE.Group;
@@ -76,38 +119,53 @@ export function buildTractor(color = 0xc8392b): VehicleModel {
   const body = new THREE.Group();
   root.add(body);
   const wheels = [
-    wheel(body, 0.34, 0.2, -0.38, 0.4, 0xe0b000), wheel(body, 0.34, 0.2, -0.38, -0.4, 0xe0b000),
-    wheel(body, 0.2, 0.14, 0.5, 0.33, 0xe0b000), wheel(body, 0.2, 0.14, 0.5, -0.33, 0xe0b000),
+    wheel(body, 0.36, 0.22, -0.38, 0.42, 0xe0b000), wheel(body, 0.36, 0.22, -0.38, -0.42, 0xe0b000),
+    wheel(body, 0.22, 0.15, 0.52, 0.34, 0xe0b000), wheel(body, 0.22, 0.15, 0.52, -0.34, 0xe0b000),
   ];
-  box(body, 1.25, 0.2, 0.42, 0x333333, 0.05, 0.3, 0); // chassis
-  box(body, 0.78, 0.36, 0.44, color, 0.36, 0.52, 0); // hood
-  box(body, 0.72, 0.05, 0.4, color, 0.37, 0.72, 0).scale.set(1, 1, 0.9);
-  box(body, 0.06, 0.26, 0.38, 0x2a2a2a, 0.76, 0.5, 0); // grille
-  for (const z of [0.4, -0.4]) box(body, 0.52, 0.06, 0.26, color, -0.38, 0.72, z); // fenders
-  box(body, 0.56, 0.12, 0.6, color, -0.34, 0.47, 0); // cab base
-  const glass = new THREE.MeshLambertMaterial({ color: GLASS, transparent: true, opacity: 0.75 });
-  box(body, 0.54, 0.46, 0.58, glass, -0.34, 0.76, 0);
-  for (const [x, z] of [[-0.6, 0.28], [-0.6, -0.28], [-0.08, 0.28], [-0.08, -0.28]]) box(body, 0.04, 0.48, 0.04, 0x222222, x, 0.76, z);
-  box(body, 0.66, 0.06, 0.68, 0xf2f2f2, -0.34, 1.02, 0); // roof
-  cyl(body, 0.03, 0.4, 0x333333, 0.58, 0.9, 0.14, 'y', 6); // exhaust
-  const lights = headlights(body, 0.79, 0.55, [0.15, -0.15]);
+  rbox(body, 1.25, 0.18, 0.36, 0.05, 0x2b2b2b, 0.05, 0.32, 0); // chassis
+  rbox(body, 0.82, 0.34, 0.42, 0.08, color, 0.36, 0.56, 0); // hood
+  rbox(body, 0.7, 0.04, 0.3, 0.02, 0x2b2b2b, 0.38, 0.735, 0); // hood vent
+  rbox(body, 0.06, 0.26, 0.34, 0.03, 0x2a2a2a, 0.78, 0.52, 0); // grille
+  for (let i = 0; i < 4; i++) box(body, 0.065, 0.02, 0.3, 0x444444, 0.79, 0.43 + i * 0.055, 0).castShadow = false;
+  rbox(body, 0.12, 0.18, 0.34, 0.03, 0x3a3a3a, 0.86, 0.34, 0); // front weights
+  for (const z of [0.42, -0.42]) fender(body, 0.42, 0.26, -0.38, 0.38, z, color);
+  rbox(body, 0.6, 0.14, 0.64, 0.04, color, -0.34, 0.5, 0); // cab base
+  cab(body, -0.34, 0.57, 0.56, 0.48, 0.6, 0xf2f2f2);
+  cyl(body, 0.032, 0.5, 0xb8b8b8, 0.6, 0.92, 0.16, 'y', 10).material = mat(0xb8b8b8, 0.25, 0.9); // exhaust
+  cyl(body, 0.04, 0.05, 0x333333, 0.6, 1.18, 0.16, 'y', 10);
+  box(body, 0.1, 0.03, 0.12, 0x2b2b2b, -0.05, 0.28, 0.34); // step
+  box(body, 0.12, 0.12, 0.3, 0x2b2b2b, -0.72, 0.36, 0); // rear hitch
+  const lights = headlights(body, 0.82, 0.62, [0.14, -0.14]);
   return { root, body, wheels, lights };
 }
 
 function buildHeader(width: number) {
   const g = new THREE.Group();
-  box(g, 0.55, 0.22, width, 0xd9a21c, 0, 0.3, 0); // trough
-  box(g, 0.08, 0.05, width, 0x9aa0a5, 0.3, 0.2, 0); // cutter bar
-  for (const z of [width / 2, -width / 2]) box(g, 0.6, 0.35, 0.05, 0xc28d17, 0.02, 0.35, z); // side plates
-  const reel = new THREE.Group();
-  reel.position.set(0.18, 0.62, 0);
-  g.add(reel);
-  cyl(reel, 0.04, width - 0.1, 0x7a5a10, 0, 0, 0, 'z', 6);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    const bat = box(reel, 0.03, 0.03, width - 0.14, 0xe0b34a, Math.cos(a) * 0.2, Math.sin(a) * 0.2, 0);
-    bat.castShadow = false;
+  rbox(g, 0.5, 0.2, width, 0.05, 0xd9a21c, -0.02, 0.28, 0); // trough
+  rbox(g, 0.22, 0.34, width, 0.04, 0xc28d17, -0.2, 0.42, 0); // back wall
+  box(g, 0.1, 0.04, width, 0x9aa0a5, 0.26, 0.16, 0).material = mat(0x9aa0a5, 0.3, 0.9); // cutter bar
+  cyl(g, 0.07, width - 0.1, 0xb07c12, 0.02, 0.32, 0, 'z', 10); // auger
+  for (const z of [width / 2, -width / 2]) {
+    const plate = rbox(g, 0.62, 0.36, 0.05, 0.02, 0xc28d17, 0.02, 0.36, z);
+    plate.rotation.y = 0;
+    const divider = add(g, new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.3, 4), mat(0xd9a21c)), 0.34, 0.2, z);
+    divider.rotation.z = -Math.PI / 2;
   }
+  const reel = new THREE.Group();
+  reel.position.set(0.18, 0.66, 0);
+  g.add(reel);
+  cyl(reel, 0.035, width - 0.1, 0x7a5a10, 0, 0, 0, 'z', 8);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const bat = box(reel, 0.025, 0.025, width - 0.14, 0xe0b34a, Math.cos(a) * 0.2, Math.sin(a) * 0.2, 0);
+    bat.castShadow = false;
+    for (let t = -width / 2 + 0.2; t < width / 2 - 0.1; t += 0.35) {
+      const tine = box(reel, 0.01, 0.08, 0.01, 0x666666, Math.cos(a) * 0.24, Math.sin(a) * 0.24, t);
+      tine.rotation.z = a;
+      tine.castShadow = false;
+    }
+  }
+  for (const z of [width / 2 - 0.1, -width / 2 + 0.1]) box(reel, 0.42, 0.03, 0.03, 0x7a5a10, 0, 0, z).castShadow = false;
   return { g, reel };
 }
 
@@ -117,26 +175,36 @@ export function buildCombine(headerWidth: number): VehicleModel {
   root.add(body);
   const L = COMBINE_LEN, W = COMBINE_WID;
   const wheels = [
-    wheel(body, 0.46, 0.28, 0.45, W / 2 - 0.06, 0x333333), wheel(body, 0.46, 0.28, 0.45, -W / 2 + 0.06, 0x333333),
-    wheel(body, 0.28, 0.2, -0.8, W / 2 - 0.12, 0x333333), wheel(body, 0.28, 0.2, -0.8, -W / 2 + 0.12, 0x333333),
+    wheel(body, 0.48, 0.3, 0.45, W / 2 - 0.04, 0x3a3a3a), wheel(body, 0.48, 0.3, 0.45, -W / 2 + 0.04, 0x3a3a3a),
+    wheel(body, 0.3, 0.2, -0.82, W / 2 - 0.12, 0x3a3a3a), wheel(body, 0.3, 0.2, -0.82, -W / 2 + 0.12, 0x3a3a3a),
   ];
-  box(body, L * 0.86, 0.75, W * 0.72, 0xe3a822, -0.1, 0.85, 0); // body
-  box(body, L * 0.5, 0.3, W * 0.66, 0xc98f16, -0.35, 1.38, 0); // grain tank
-  box(body, L * 0.46, 0.04, W * 0.6, 0x6b5a2c, -0.35, 1.54, 0);
-  box(body, 0.2, 0.5, W * 0.72, 0x3a3a3a, -1.1, 0.85, 0); // rear
-  const glass = new THREE.MeshLambertMaterial({ color: GLASS, transparent: true, opacity: 0.75 });
-  box(body, 0.5, 0.48, 0.62, glass, 0.62, 1.47, 0); // cab
-  box(body, 0.56, 0.06, 0.7, 0xf5f5f5, 0.62, 1.74, 0);
-  box(body, 0.5, 0.3, 0.5, 0xe3a822, 0.8, 0.75, 0); // feeder
-  const lights = headlights(body, 0.88, 1.6, [0.22, -0.22]);
+  const paint = 0xe3a822;
+  rbox(body, L * 0.86, 0.78, W * 0.7, 0.1, paint, -0.12, 0.86, 0); // main body
+  rbox(body, L * 0.5, 0.08, W * 0.72, 0.03, 0x2b2b2b, -0.2, 0.44, 0); // lower trim
+  for (const z of [W / 2 - 0.02, -W / 2 + 0.02]) fender(body, 0.52, 0.34, 0.45, 0.46, z, paint);
+  // Grain tank with flared top and extensions.
+  rbox(body, L * 0.5, 0.26, W * 0.66, 0.05, 0xc98f16, -0.35, 1.37, 0);
+  rbox(body, L * 0.54, 0.06, W * 0.74, 0.02, 0xb07c12, -0.35, 1.53, 0);
+  box(body, L * 0.46, 0.02, W * 0.58, 0x5a4a22, -0.35, 1.5, 0);
+  // Straw chopper / spreader at the back.
+  rbox(body, 0.3, 0.45, W * 0.6, 0.05, 0x3a3a3a, -1.1, 0.7, 0);
+  for (const z of [0.18, -0.18]) cyl(body, 0.12, 0.03, 0x555555, -1.26, 0.52, z, 'y', 10);
+  // Cab up front with stairs and railings.
+  rbox(body, 0.56, 0.12, 0.72, 0.03, paint, 0.62, 1.26, 0);
+  cab(body, 0.62, 1.32, 0.5, 0.46, 0.64, 0xf5f5f5);
+  for (let i = 0; i < 4; i++) box(body, 0.14, 0.02, 0.12, 0x2b2b2b, 0.25 + i * 0.02, 0.5 + i * 0.2, W / 2 - 0.05);
+  cyl(body, 0.012, 0.9, 0x2b2b2b, 0.32, 0.95, W / 2 + 0.02, 'y', 6);
+  rbox(body, 0.5, 0.3, 0.52, 0.05, paint, 0.82, 0.74, 0); // feeder house
+  cyl(body, 0.04, 0.35, 0xb8b8b8, -0.7, 1.72, -0.35, 'y', 8).material = mat(0xb8b8b8, 0.25, 0.9); // exhaust
+  const lights = headlights(body, 0.9, 1.62, [0.22, -0.22]);
 
-  // Unloading pipe: pivots at the left rear of the tank and swings out when unloading.
+  // Unloading auger: pivots at the rear left of the tank and swings out when unloading.
   const pipe = new THREE.Group();
   pipe.position.set(-0.55, 1.5, -W * 0.3);
   body.add(pipe);
-  const tube = cyl(pipe, 0.07, 1.9, 0xb8841a, 0.95, 0, 0, 'x', 8);
-  tube.castShadow = true;
-  box(pipe, 0.14, 0.2, 0.14, 0x8a6210, 1.9, -0.08, 0);
+  cyl(pipe, 0.07, 1.9, 0xb8841a, 0.95, 0, 0, 'x', 10);
+  const spout = add(pipe, new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.22, 10), mat(0x8a6210)), 1.9, -0.1, 0);
+  spout.castShadow = true;
   pipe.rotation.y = Math.PI * 0.94; // folded back along the body
 
   const model: VehicleModel = { root, body, wheels, lights, pipe };
@@ -167,7 +235,7 @@ export function buildRootHarvester(): VehicleModel {
   box(body, 2.1, 0.55, 1.1, 0x2f7d3a, -0.2, 0.8, 0); // chassis body
   box(body, 1.2, 0.6, 1.2, 0x2f7d3a, -0.55, 1.35, 0); // bunker walls
   box(body, 1.1, 0.05, 1.1, 0x5a4630, -0.55, 1.6, 0); // soil/crop in bunker
-  const glass = new THREE.MeshLambertMaterial({ color: GLASS, transparent: true, opacity: 0.75 });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x6f9fb8, transparent: true, opacity: 0.6, roughness: 0.05, metalness: 0.9 });
   box(body, 0.55, 0.5, 0.7, glass, 0.55, 1.35, 0);
   box(body, 0.6, 0.06, 0.78, 0xf5f5f5, 0.55, 1.63, 0);
   box(body, 0.9, 0.1, 0.9, 0x555555, 0.2, 1.1, 0); // sorting deck
@@ -269,7 +337,7 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     box(root, L, H, 0.06, 0x3f8a3a, -0.1, y0 + H / 2, -W / 2);
     box(root, 0.06, H, W, 0x3f8a3a, L / 2 - 0.1, y0 + H / 2, 0);
     box(root, 0.06, H, W, 0x3f8a3a, -L / 2 - 0.1, y0 + H / 2, 0);
-    const fill = new THREE.Mesh(new THREE.BoxGeometry(L - 0.1, 1, W - 0.1), new THREE.MeshLambertMaterial({ color: 0xe2bf5a, flatShading: true }));
+    const fill = new THREE.Mesh(new THREE.BoxGeometry(L - 0.1, 1, W - 0.1), new THREE.MeshStandardMaterial({ color: 0xe2bf5a, flatShading: true }));
     fill.position.set(-0.1, y0, 0);
     fill.visible = false;
     fill.receiveShadow = true;
@@ -287,7 +355,7 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
 export function buildSilo(radius: number) {
   const g = new THREE.Group();
   const h = 3.2;
-  add(g, new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, h, 24), mat(0xd3d9de)), 0, h / 2, 0);
+  add(g, new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, h, 24), mat(0xb9c1c7, 0.35, 0.7)), 0, h / 2, 0);
   add(g, new THREE.Mesh(new THREE.ConeGeometry(radius * 1.04, 0.9, 24), mat(0xaab3ba)), 0, h + 0.45, 0);
   for (let i = 1; i < 5; i++) {
     add(g, new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.01, radius * 1.01, 0.05, 24), mat(0x9aa4ab)), 0, (h / 5) * i, 0);
@@ -309,7 +377,7 @@ export function buildShed(w: number, d: number, wall = 0xa6463a, roof = 0x6f7a80
   ];
   roofGeo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
   roofGeo.computeVertexNormals();
-  const roofMat = new THREE.MeshLambertMaterial({ color: roof, side: THREE.DoubleSide, flatShading: true });
+  const roofMat = new THREE.MeshStandardMaterial({ color: roof, side: THREE.DoubleSide, flatShading: true });
   add(g, new THREE.Mesh(roofGeo, roofMat), 0, 0, 0);
   const gable = new THREE.BufferGeometry();
   gable.setAttribute('position', new THREE.Float32BufferAttribute([
@@ -317,7 +385,7 @@ export function buildShed(w: number, d: number, wall = 0xa6463a, roof = 0x6f7a80
     w / 2, h, d / 2, w / 2, h, -d / 2, w / 2, top - 0.1, 0,
   ], 3));
   gable.computeVertexNormals();
-  add(g, new THREE.Mesh(gable, new THREE.MeshLambertMaterial({ color: wall, side: THREE.DoubleSide })), 0, 0, 0);
+  add(g, new THREE.Mesh(gable, new THREE.MeshStandardMaterial({ color: wall, side: THREE.DoubleSide })), 0, 0, 0);
   return g;
 }
 
@@ -349,12 +417,30 @@ export function buildElevator(w: number, d: number) {
 /** Instanced low-poly trees. */
 export function buildTrees(points: { x: number; z: number; s: number; v: number }[]) {
   const group = new THREE.Group();
-  const trunkGeo = new THREE.CylinderGeometry(0.1, 0.14, 0.8, 6);
-  const crownGeo = new THREE.IcosahedronGeometry(0.75, 0);
-  const pineGeo = new THREE.ConeGeometry(0.6, 1.8, 7);
+  const trunkGeo = new THREE.CylinderGeometry(0.08, 0.13, 0.8, 7);
+  // Lumpy broadleaf crown: several jittered blobs merged together.
+  const blobs: THREE.BufferGeometry[] = [];
+  let seed = 3;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (const [x, y, z, r] of [[0, 0, 0, 0.62], [0.35, -0.1, 0.1, 0.45], [-0.3, -0.05, -0.2, 0.48], [0.05, 0.3, -0.1, 0.45], [-0.1, -0.15, 0.35, 0.42]]) {
+    const g = new THREE.IcosahedronGeometry(r, 1);
+    const p = g.getAttribute('position');
+    for (let i = 0; i < p.count; i++) {
+      const k = 1 + (rnd() - 0.5) * 0.18;
+      p.setXYZ(i, p.getX(i) * k + x, p.getY(i) * k + y, p.getZ(i) * k + z);
+    }
+    blobs.push(g);
+  }
+  const crownGeo = mergeGeometries(blobs)!;
+  crownGeo.computeVertexNormals();
+  const pineGeo = mergeGeometries([0, 1, 2].map(i => {
+    const g = new THREE.ConeGeometry(0.62 - i * 0.14, 0.9, 9);
+    g.translate(0, -0.45 + i * 0.5, 0);
+    return g;
+  }))!;
   const trunks = new THREE.InstancedMesh(trunkGeo, mat(0x6b4a2f), points.length);
-  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({ flatShading: true }), points.length);
-  const pines = new THREE.InstancedMesh(pineGeo, new THREE.MeshLambertMaterial({ flatShading: true }), points.length);
+  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), points.length);
+  const pines = new THREE.InstancedMesh(pineGeo, new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }), points.length);
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const c = new THREE.Color();

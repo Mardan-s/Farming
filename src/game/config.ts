@@ -66,29 +66,31 @@ export interface CropDef {
     style: 'grain' | 'row';
     height: number;
     stages: [number, number, number, number]; // sprout, young, mature (or flowering), ripe
+    heads?: [number, number, number, number]; // ears, tassels, flowers per stage; defaults to stages
+    plant: 'grain' | 'corn' | 'sunflower' | 'bush' | 'canola';
     stalks?: boolean; // leaves tall stalk stubble after harvest
   };
 }
 
 export const CROP_DEFS: Record<CropId, CropDef> = {
   wheat: { name: 'Wheat', icon: '🌾', growDays: 2, yieldPerCell: 95, seedCostPerCell: 4, basePrice: 330, color: 0xe2bf5a,
-    look: { style: 'grain', height: 0.42, stages: [0x9ccf55, 0x80b845, 0x6aa33a, 0xe3bd4f] } },
+    look: { style: 'grain', plant: 'grain', height: 0.42, stages: [0x8cc24e, 0x74ad40, 0x5f9a36, 0xcfa944], heads: [0x8cc24e, 0x7fb448, 0xa2c65c, 0xecc65a] } },
   corn: { name: 'Corn', icon: '🌽', growDays: 3, yieldPerCell: 130, seedCostPerCell: 6, basePrice: 300, color: 0xf2c230,
-    look: { style: 'row', height: 1.05, stages: [0x62b04a, 0x479f3c, 0x3a8f33, 0xcfb25e], stalks: true } },
+    look: { style: 'row', plant: 'corn', height: 1.05, stages: [0x5aa845, 0x44983a, 0x378a31, 0xc4a560], heads: [0x5aa845, 0x44983a, 0xd6c65e, 0xc79f4c], stalks: true } },
   soy: { name: 'Soybeans', icon: '🫘', growDays: 2.5, yieldPerCell: 72, seedCostPerCell: 5, basePrice: 520, color: 0xc9a86a,
-    look: { style: 'row', height: 0.32, stages: [0x7cc254, 0x62b045, 0x4f9e3b, 0xb88f42] } },
+    look: { style: 'row', plant: 'bush', height: 0.34, stages: [0x72bb50, 0x5aa843, 0x4a973a, 0xb08a40] } },
   barley: { name: 'Barley', icon: '🍺', growDays: 1.75, yieldPerCell: 100, seedCostPerCell: 4, basePrice: 300, color: 0xd9c27e,
-    look: { style: 'grain', height: 0.36, stages: [0xa6d160, 0x93c257, 0x86b456, 0xdcc98a] } },
+    look: { style: 'grain', plant: 'grain', height: 0.36, stages: [0x9acb5c, 0x88bb52, 0x7aac4e, 0xd4bf80], heads: [0x9acb5c, 0x8cbf55, 0xaacb6a, 0xe8d69a] } },
   oats: { name: 'Oats', icon: '🥣', growDays: 1.5, yieldPerCell: 80, seedCostPerCell: 3, basePrice: 360, color: 0xe6dcb0,
-    look: { style: 'grain', height: 0.4, stages: [0x93c979, 0x82b86f, 0x77aa6c, 0xe0d6a6] } },
+    look: { style: 'grain', plant: 'grain', height: 0.4, stages: [0x8cc574, 0x7ab46a, 0x6ea566, 0xd6cc98], heads: [0x8cc574, 0x80b86e, 0xa8c98c, 0xefe5bb] } },
   canola: { name: 'Canola', icon: '🌼', growDays: 2.75, yieldPerCell: 70, seedCostPerCell: 6, basePrice: 600, color: 0x2e2a20,
-    look: { style: 'grain', height: 0.55, stages: [0x6fb85a, 0x5aa850, 0xf5d62a, 0x6b6a33] } },
+    look: { style: 'grain', plant: 'canola', height: 0.55, stages: [0x68b256, 0x55a34c, 0x4f9a46, 0x6b6a33], heads: [0x68b256, 0x5fae52, 0xf7dc2a, 0x5a5530] } },
   sunflower: { name: 'Sunflowers', icon: '🌻', growDays: 3.5, yieldPerCell: 75, seedCostPerCell: 6, basePrice: 640, color: 0x3b3328,
-    look: { style: 'row', height: 1.2, stages: [0x6cb44e, 0x4f9f3e, 0xf2c21b, 0x5e4a2a], stalks: true } },
+    look: { style: 'row', plant: 'sunflower', height: 1.2, stages: [0x62ae4a, 0x4a9a3c, 0x43903a, 0x6b5a2e], heads: [0x62ae4a, 0x5ca044, 0xf5c518, 0x3a2a18], stalks: true } },
   potato: { name: 'Potatoes', icon: '🥔', growDays: 3, yieldPerCell: 320, seedCostPerCell: 14, basePrice: 145, color: 0xc9a36a, root: true,
-    look: { style: 'row', height: 0.38, stages: [0x6fb552, 0x58a546, 0x4a9a3e, 0x8f8440] } },
+    look: { style: 'row', plant: 'bush', height: 0.4, stages: [0x66b04e, 0x52a044, 0x46953c, 0x8f8440], heads: [0x66b04e, 0x52a044, 0xe4d6ef, 0x8f8440] } },
   sugarbeet: { name: 'Sugar beets', icon: '🍠', growDays: 3.5, yieldPerCell: 380, seedCostPerCell: 9, basePrice: 115, color: 0xeadfca, root: true,
-    look: { style: 'row', height: 0.45, stages: [0x62ad4c, 0x4c9c42, 0x3f8f3a, 0x77a445] } },
+    look: { style: 'row', plant: 'bush', height: 0.46, stages: [0x5aa848, 0x46983f, 0x3b8b38, 0x6f9c42] } },
 };
 
 export function emptyCropRecord<T>(value: () => T): Record<CropId, T> {

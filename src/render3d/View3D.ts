@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
+import { QUALITY, getQuality } from './quality';
 import {
   COMBINE_LEN, CROP_DEFS, ELEVATOR, HEADER_OFFSET, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS,
   PARCEL_W, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, parcelPrice,
@@ -69,9 +71,17 @@ export class View3D implements ViewControls {
   private dist = 30;
   private yaw = 0;
   private sun = new THREE.DirectionalLight(0xffffff, 2.6);
-  private hemi = new THREE.HemisphereLight(0xcfe8ff, 0x55703a, 1.1);
+  private hemi = new THREE.HemisphereLight(0xb8d4ff, 0x4a5a3a, 1.1);
+  private q = QUALITY[getQuality()];
   private ground: Ground;
-  private crops = new Crops();
+  private crops = new Crops(this.q.plantDensity, this.q.grassDensity);
+  private skyMesh = new Sky();
+  private cloudDome!: THREE.Mesh;
+  private pmrem!: THREE.PMREMGenerator;
+  private envScene = new THREE.Scene();
+  private envRT: THREE.WebGLRenderTarget | null = null;
+  private envT = 99;
+  private sunDir = new THREE.Vector3(0, 1, 0);
   private particles = new Particles();
   private stageCache = new Map<number, Int8Array>();
   private vViews = new Map<number, VehicleView>();
@@ -113,7 +123,9 @@ export class View3D implements ViewControls {
 
   constructor(parent: HTMLElement, private sim: Game, private host: ViewHost) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.q.pixelRatio));
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.78;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     parent.appendChild(this.renderer.domElement);
@@ -121,14 +133,17 @@ export class View3D implements ViewControls {
     this.scene.fog = new THREE.Fog(this.skyDay, 60, 160);
     this.scene.add(this.hemi, this.sun, this.sun.target);
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(this.q.shadowMap, this.q.shadowMap);
     this.sun.shadow.bias = -0.0006;
     this.sun.shadow.normalBias = 0.02;
 
-    this.ground = new Ground(buildTiles(), this.renderer.capabilities.getMaxAnisotropy());
+    this.ground = new Ground(buildTiles(), this.renderer.capabilities.getMaxAnisotropy(), this.q.detailGround);
     this.scene.add(this.ground.group, this.crops.group, this.particles.points, this.fieldGroup, this.parcelGroup, this.draftGroup);
     this.paintAll();
     this.buildScenery();
+    this.buildSky();
+    this.buildHills();
+    this.syncGrass();
 
     this.grid = this.buildGrid();
     this.grid.visible = false;
@@ -161,7 +176,7 @@ export class View3D implements ViewControls {
       const f = sim.world.fields.get(fid);
       if (f) this.paintFieldCell(f, i);
     });
-    sim.events.on('fields', () => { this.syncFieldTiles(); this.redrawFields(); });
+    sim.events.on('fields', () => { this.syncFieldTiles(); this.redrawFields(); this.syncGrass(); });
     sim.events.on('parcels', () => this.redrawParcels());
     sim.events.on('money', (x: number, y: number, amount: number) => this.moneyPopup(x, y, amount));
 
@@ -202,7 +217,8 @@ export class View3D implements ViewControls {
       case CellState.Plowed: return v ? T.PlowV : T.PlowH;
       case CellState.Seeded:
         if (f.rolled[i]) return v ? T.RolledV : T.RolledH;
-        return stage <= 0 ? (v ? T.SeedV : T.SeedH) : (v ? T.PlowV : T.PlowH);
+        if (stage <= 0) return v ? T.SeedV : T.SeedH;
+        return stage >= 2 ? (v ? T.CanopyV : T.CanopyH) : (v ? T.PlowV : T.PlowH);
       default: {
         const crop = f.cropAt(i);
         if (crop && CROP_DEFS[crop].root) return v ? T.RolledV : T.RolledH; // dug-over bare soil
@@ -270,6 +286,55 @@ export class View3D implements ViewControls {
 
   // ---------- scenery ----------
 
+  private syncGrass() {
+    const w = this.sim.world;
+    this.crops.syncGrass((x, y) => w.fieldIdAt(x, y) < 0 && !w.blocked[y * MAP_W + x]);
+  }
+
+  private buildSky() {
+    this.skyMesh.scale.setScalar(450);
+    const u = this.skyMesh.material.uniforms;
+    u.turbidity.value = 4;
+    u.rayleigh.value = 1.4;
+    u.mieCoefficient.value = 0.004;
+    u.mieDirectionalG.value = 0.82;
+    this.scene.add(this.skyMesh);
+    // Grey cloud cover that fades in with bad weather.
+    this.cloudDome = new THREE.Mesh(
+      new THREE.SphereGeometry(440, 24, 12),
+      new THREE.MeshBasicMaterial({ color: 0x9aa4ac, side: THREE.BackSide, transparent: true, opacity: 0, fog: false, depthWrite: false }),
+    );
+    this.scene.add(this.cloudDome);
+    if (this.q.envMap) {
+      this.pmrem = new THREE.PMREMGenerator(this.renderer);
+      const envSky = new Sky();
+      envSky.material = this.skyMesh.material;
+      envSky.scale.setScalar(450);
+      this.envScene.add(envSky);
+    }
+  }
+
+  /** Rolling hills around the map so the world doesn't end at a flat edge. */
+  private buildHills() {
+    const group = new THREE.Group();
+    const geo = new THREE.IcosahedronGeometry(1, 2);
+    let seed = 42;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    const cx = MAP_W / 2, cz = MAP_H / 2;
+    for (let i = 0; i < 46; i++) {
+      const a = (i / 46) * Math.PI * 2 + rnd() * 0.1;
+      const rx = MAP_W * 0.75 + rnd() * 40, rz = MAP_H * 0.9 + rnd() * 40;
+      const r = 22 + rnd() * 28;
+      const color = new THREE.Color().setHSL(0.26 + rnd() * 0.06, 0.38, 0.28 + rnd() * 0.1);
+      const hill = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 1, flatShading: true }));
+      hill.position.set(cx + Math.cos(a) * rx, -r * 0.55, cz + Math.sin(a) * rz);
+      hill.scale.set(r, r * (0.55 + rnd() * 0.35), r * (0.8 + rnd() * 0.4));
+      hill.receiveShadow = true;
+      group.add(hill);
+    }
+    this.scene.add(group);
+  }
+
   private buildScenery() {
     const silo = buildSilo(SILO_RADIUS * 0.9);
     silo.position.set(SILO_POS.x, 0, SILO_POS.y);
@@ -287,7 +352,7 @@ export class View3D implements ViewControls {
 
     // Fence around the farmyard.
     const fence = new THREE.Group();
-    const postMat = new THREE.MeshLambertMaterial({ color: 0x7a5a3a });
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a });
     const edges: [number, number, number, number][] = [
       [YARD.x, YARD.y, YARD.x + YARD.w, YARD.y], [YARD.x, YARD.y, YARD.x, YARD.y + YARD.h],
       [YARD.x + YARD.w, YARD.y, YARD.x + YARD.w, YARD.y + YARD.h - 0],
@@ -310,7 +375,7 @@ export class View3D implements ViewControls {
 
     // Road center dashes.
     const dashGeo = new THREE.PlaneGeometry(1, 0.12).rotateX(-Math.PI / 2);
-    const dashes = new THREE.InstancedMesh(dashGeo, new THREE.MeshLambertMaterial({ color: 0xf2d15c }), Math.ceil(MAP_W / 2));
+    const dashes = new THREE.InstancedMesh(dashGeo, new THREE.MeshStandardMaterial({ color: 0xf2d15c }), Math.ceil(MAP_W / 2));
     const m = new THREE.Matrix4();
     for (let i = 0; i < dashes.count; i++) {
       m.makeTranslation(i * 2 + 0.5, 0.01, ROAD.y + ROAD.h / 2);
@@ -435,7 +500,7 @@ export class View3D implements ViewControls {
       }
     }
     pts.forEach((p, i) => {
-      const dot = new THREE.Mesh(new THREE.CylinderGeometry(i === 0 ? 0.3 : 0.22, i === 0 ? 0.3 : 0.22, 0.12, 20), new THREE.MeshLambertMaterial({ color: i === 0 ? 0xffe066 : 0xffffff }));
+      const dot = new THREE.Mesh(new THREE.CylinderGeometry(i === 0 ? 0.3 : 0.22, i === 0 ? 0.3 : 0.22, 0.12, 20), new THREE.MeshStandardMaterial({ color: i === 0 ? 0xffe066 : 0xffffff }));
       dot.position.set(p.x, 0.08, p.y);
       this.draftGroup.add(dot);
       if (i === 0 && pts.length >= 4) this.firstCorner = dot;
@@ -615,6 +680,8 @@ export class View3D implements ViewControls {
     this.updateDraft();
     this.updateWeather(dt);
     this.updateLighting();
+    this.updateEnvironment(dt);
+    this.crops.tick(this.time);
     this.updatePopups(dt);
     this.particles.update(dt);
     this.renderer.render(this.scene, this.camera);
@@ -631,13 +698,30 @@ export class View3D implements ViewControls {
     if (this.flash > 0) this.sky.lerp(new THREE.Color(0xdfe6ff), this.flash * 0.6);
     this.scene.background = this.sky;
     (this.scene.fog as THREE.Fog).color.copy(this.sky);
-    this.sun.intensity = (0.35 + day * 2.4) * (1 - 0.72 * this.cloud);
-    this.sun.color.setHex(0x9fb2ff).lerp(new THREE.Color(0xfff1dc), day).lerp(new THREE.Color(0xffb070), dusk * 0.5);
-    this.hemi.intensity = (0.45 + day * 0.8) * (1 - 0.2 * this.cloud) + this.flash * 2.5;
-    // Sun sweeps across the sky during the day.
+
+    // Sun path: rises in the east (-x), sets in the west, low in the south.
     const ang = ((h - 6) / 12) * Math.PI;
-    const dir = new THREE.Vector3(-Math.cos(ang) * 0.8, 0.9 + Math.sin(ang) * 0.6, 0.45).normalize();
-    this.sun.position.copy(this.target).addScaledVector(dir, 60);
+    const elev = Math.sin(ang);
+    const sunDir = new THREE.Vector3(-Math.cos(ang), Math.max(-0.3, elev) * 0.9, 0.45).normalize();
+    this.sunDir.copy(sunDir);
+    const u = this.skyMesh.material.uniforms;
+    u.sunPosition.value.copy(sunDir);
+    u.turbidity.value = 4 + this.cloud * 12;
+    u.rayleigh.value = 1.4 - this.cloud * 0.9;
+    this.skyMesh.position.copy(this.camera.position);
+    this.cloudDome.position.copy(this.camera.position);
+    const dome = this.cloudDome.material as THREE.MeshBasicMaterial;
+    dome.opacity = this.cloud * 0.85;
+    dome.color.copy(this.skyGrey).multiplyScalar(0.2 + 0.8 * day);
+
+    // Light comes from the sun by day and a cool moon at night.
+    const lightDir = day > 0.05 ? new THREE.Vector3(sunDir.x, Math.max(0.35, sunDir.y), sunDir.z).normalize()
+      : new THREE.Vector3(0.4, 0.8, -0.3).normalize();
+    this.sun.intensity = (0.7 + day * 2.55) * (1 - 0.7 * this.cloud);
+    this.sun.color.setHex(0x9fb2ff).lerp(new THREE.Color(0xfff0d8), day).lerp(new THREE.Color(0xffa860), dusk * 0.55);
+    this.hemi.intensity = (0.45 + day * 0.05) * (1 - 0.15 * this.cloud) + this.flash * 2.5;
+    this.scene.environmentIntensity = (0.2 + day * 0.25) * (1 - 0.3 * this.cloud);
+    this.sun.position.copy(this.target).addScaledVector(lightDir, 60);
     this.sun.target.position.copy(this.target);
     const s = THREE.MathUtils.clamp(this.dist * 0.95, 14, 55);
     const cam = this.sun.shadow.camera;
@@ -648,6 +732,18 @@ export class View3D implements ViewControls {
     }
     const night = 1 - day;
     for (const v of this.vViews.values()) v.model.lights.emissiveIntensity = night > 0.5 ? 2.5 : 0;
+  }
+
+  /** Re-bakes sky reflections every few seconds so machines pick up the light. */
+  private updateEnvironment(dt: number) {
+    if (!this.q.envMap) return;
+    this.envT += dt;
+    if (this.envT < 4) return;
+    this.envT = 0;
+    const rt = this.pmrem.fromScene(this.envScene, 0, 1, 1000);
+    this.envRT?.dispose();
+    this.envRT = rt;
+    this.scene.environment = rt.texture;
   }
 
   private buildRain() {
@@ -729,7 +825,7 @@ export class View3D implements ViewControls {
         view.fill.visible = f > 0.01;
         view.fill.scale.y = Math.max(0.01, f * 0.52);
         view.fill.position.y = 0.45 + view.fill.scale.y / 2;
-        if (t.load.crop) (view.fill.material as THREE.MeshLambertMaterial).color.setHex(CROP_DEFS[t.load.crop].color);
+        if (t.load.crop) (view.fill.material as THREE.MeshStandardMaterial).color.setHex(CROP_DEFS[t.load.crop].color);
       }
     }
   }

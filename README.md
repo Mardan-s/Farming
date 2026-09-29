@@ -5,10 +5,10 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 ## How to play
 
 1. **Draw a field.** Tap ✏️ **New field**, then tap at least 4 grid corners on land you own. Tap the first corner again, or press **Create**.
-2. **Plow.** Tap the tractor, tap the field, and choose **Plow**. The tractor drives to the farmyard, hitches the plow, and plows the field in rows.
-3. **Seed.** Send the tractor back and pick a crop: **wheat, barley, oats, corn, soybeans, canola** or **sunflowers**. Each has its own grow time, yield and price. The tractor swaps to the seeder by itself.
-4. **Grow.** Crops grow through visible stages. They keep growing while the game is closed, but slower.
-5. **Harvest.** When the field turns golden, tap the combine and then the field.
+2. **Tap the field.** It shows a short to-do list of what it needs right now, like Plow, Plant, Weeds or Harvest, with the most important job first. Tap a job and the best free machine goes, fetching the right implement from the farmyard. If you're missing a machine, the card offers to buy it. **More** lists the other jobs, and **Choose machine** lets you pick one yourself.
+3. **Plant.** Pick a crop from the swipeable crop picker: **wheat, barley, oats, corn, soybeans, canola, sunflowers, potatoes** or **sugar beets**. Each has its own grow time, yield and price.
+4. **Grow.** Crops grow as real plants that sway in the wind. They keep growing while the game is closed, but slower.
+5. **Harvest.** When the field turns golden, tap it and choose **Harvest**.
 6. **Haul and sell.** When the combine's tank fills up, a free tractor hitches the grain wagon, drives beside the combine to catch the grain, and takes it to the sell point, or to your silo if you chose that in the Market.
 
 **Field care** raises your yield. The field panel shows it as a percentage:
@@ -28,8 +28,10 @@ Controls: drag to pan, pinch or scroll to zoom, twist two fingers (or use ⟲ �
 ## Tech
 
 - TypeScript + [Three.js](https://threejs.org/) + Vite
-- Every model is low-poly geometry built in code, and ground textures are drawn on canvases, so there are no asset files
-- Crops are instanced 3D rows that grow taller at each stage; there is real-time sun shadow and a day/night cycle
+- Every model is built in code (rounded bodies, physically based materials), and ground textures are drawn on canvases, so there are no asset files
+- Crops, weeds and meadow grass are individual instanced plants with a wind shader, batched per map chunk
+- Physical sky, sky-lit reflections, tone mapping, sun shadows, day/night and weather
+- Low/Medium/High graphics setting (in Settings)
 - The build is a single self-contained `dist/index.html` that runs anywhere, including from a file
 - Progress autosaves to `localStorage`
 

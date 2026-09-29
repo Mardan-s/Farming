@@ -207,3 +207,20 @@ describe('sharing implements', () => {
     expect(game.toolOf(t1)).toBeUndefined();
   });
 });
+
+describe('field to-do list', () => {
+  it('suggests the next job and the machine for it', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    expect(game.fieldNeeds(f)[0].op).toBe('plow');
+    expect(game.bestVehicleFor(f, 'plow').vehicle?.kind).toBe('tractor');
+    f.state.fill(1);
+    expect(game.fieldNeeds(f)[0].op).toBe('seed');
+    expect(game.bestVehicleFor(f, 'fertilize').buy).toBe('spreader');
+    expect(game.bestVehicleFor(f, 'seed', 'potato').buy).toBe('planter');
+    for (let i = 0; i < f.cells.length; i++) { f.state[i] = 2; f.crop[i] = 7; f.planted[i] = game.clock - 5 * MINUTES_PER_DAY; }
+    expect(game.fieldNeeds(f)[0].op).toBe('harvest');
+    expect(game.bestVehicleFor(f, 'harvest').buy).toBe('rootHarvester');
+  });
+});

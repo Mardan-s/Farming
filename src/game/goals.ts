@@ -27,9 +27,9 @@ export interface Goal {
 
 export const GOALS: Goal[] = [
   { title: 'Draw your first field', hint: 'Tap ✏️ Field, then tap at least 4 grid corners on your land.', reward: 500, progress: s => [s.fields, 1] },
-  { title: 'Plow the field', hint: 'Tap the tractor, then tap your field and choose Plow.', reward: 400, progress: s => [s.plowed, 60] },
-  { title: 'Plant a crop', hint: 'Tap the tractor, tap the plowed field and pick a seed.', reward: 400, progress: s => [s.seeded, 60] },
-  { title: 'Harvest your crop', hint: 'When the crop turns golden, tap the combine, then the field.', reward: 600, progress: s => [s.harvested, 60] },
+  { title: 'Plow the field', hint: 'Tap your field, then tap Plow — the tractor goes by itself.', reward: 400, progress: s => [s.plowed, 60] },
+  { title: 'Plant a crop', hint: 'Tap the plowed field, then Plant a crop, and pick one.', reward: 400, progress: s => [s.seeded, 60] },
+  { title: 'Harvest your crop', hint: 'When the crop turns golden, tap the field and choose Harvest.', reward: 600, progress: s => [s.harvested, 60] },
   { title: 'Sell some grain', hint: 'The tractor hauls grain to the sell point automatically.', reward: 600, progress: s => [Math.min(s.soldLiters, 5000), 5000] },
   { title: 'Buy more land', hint: 'Tap a locked plot on the map or open the Shop.', reward: 2500, progress: s => [s.parcels - 1, 1] },
   { title: 'Buy an upgrade', hint: 'Shop → Upgrades makes your machines wider and faster.', reward: 1500, progress: s => [s.upgrades, 1] },

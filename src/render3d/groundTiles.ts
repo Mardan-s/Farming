@@ -5,9 +5,9 @@ export const TILE = 24;
 export enum T {
   Grass0, Grass1, Grass2, Grass3, Meadow,
   PlowH, PlowV, SeedH, SeedV, StrawH, StrawV, StalkH, StalkV,
-  Gravel, Road, RoadTop, RoadBottom, RolledH, RolledV,
+  Gravel, Road, RoadTop, RoadBottom, RolledH, RolledV, CanopyH, CanopyV,
 }
-const COUNT = T.RolledV + 1;
+const COUNT = T.CanopyV + 1;
 
 function rng(seed: number) {
   let s = seed >>> 0;
@@ -96,13 +96,20 @@ export function buildTiles(): HTMLCanvasElement[] {
         if (vertical) ctx.fillRect(k + 3, 0, 1, TILE); else ctx.fillRect(0, k + 3, TILE, 1);
       }
     });
+    // Soil shaded by a grown crop, with fallen leaves.
+    tiles[vertical ? T.CanopyV : T.CanopyH] = tile(ctx => {
+      soil(ctx, vertical, 5);
+      ctx.fillStyle = 'rgba(30, 45, 15, 0.45)';
+      ctx.fillRect(0, 0, TILE, TILE);
+      speckle(ctx, 12, 28, ['#4c6b2c', '#5d7d34', '#3f5a24'], 2, 1);
+    });
     tiles[vertical ? T.StrawV : T.StrawH] = tile(ctx => straw(ctx, vertical, false));
     tiles[vertical ? T.StalkV : T.StalkH] = tile(ctx => straw(ctx, vertical, true));
   }
   tiles[T.Gravel] = tile(ctx => {
-    ctx.fillStyle = '#b1a38a';
+    ctx.fillStyle = '#968a74';
     ctx.fillRect(0, 0, TILE, TILE);
-    speckle(ctx, 7, 50, ['#a0927a', '#c4b79e', '#948670', '#d0c4ab'], 2, 1);
+    speckle(ctx, 7, 60, ['#857a66', '#aa9e86', '#7c705e', '#b5a98f'], 2, 1);
   });
   const road = (edge: 'top' | 'bottom' | null) => tile(ctx => {
     ctx.fillStyle = '#56595d';
