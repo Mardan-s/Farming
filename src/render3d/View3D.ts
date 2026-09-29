@@ -14,7 +14,7 @@ import { PARCEL_COUNT, inRect, parcelRect } from '../game/world';
 import { Crops } from './crops';
 import { Ground } from './ground';
 import { T, buildTiles } from './groundTiles';
-import { disposeSprite, textSprite } from './labels';
+import { disposeSprite, tagSprite, textSprite } from './labels';
 import {
   buildCombine, buildElevator, buildFarmhouse, buildRootHarvester, buildShed, buildSilo, buildTool, buildTractor, buildTrees, setHeader,
   type ToolModel, type VehicleModel,
@@ -81,6 +81,7 @@ export class View3D implements ViewControls {
   private envScene = new THREE.Scene();
   private envRT: THREE.WebGLRenderTarget | null = null;
   private envT = 99;
+  private envDome: THREE.Mesh | null = null;
   private sunDir = new THREE.Vector3(0, 1, 0);
   private particles = new Particles();
   private stageCache = new Map<number, Int8Array>();
@@ -181,6 +182,8 @@ export class View3D implements ViewControls {
     sim.events.on('money', (x: number, y: number, amount: number) => this.moneyPopup(x, y, amount));
 
     this.setupInput();
+    // Labels drawn before the web fonts arrive use a fallback face; redraw once they're in.
+    document.fonts?.ready.then(() => { this.redrawFields(); this.redrawParcels(); });
     window.addEventListener('resize', () => this.resize());
     this.resize();
     // Start with about 26 cells visible across the screen.
@@ -258,14 +261,16 @@ export class View3D implements ViewControls {
   }
 
   /** Short field label: number plus icons for what the field needs. */
-  private fieldLabel(f: Field) {
+  private fieldMarks(f: Field) {
     const s = f.summary(this.sim.clock);
-    let label = `${f.id}`;
-    if (s.ready) label += ' ✅';
-    if (s.weedy > s.total * 0.05) label += ' 🌿';
-    if (s.needLime > s.total * 0.2) label += ' 🪨';
-    return label;
+    const marks: string[] = [];
+    if (s.ready) marks.push('#c9961e'); // ripe
+    if (s.weedy > s.total * 0.05) marks.push('#8a4a9a'); // weeds
+    if (s.needLime > s.total * 0.2) marks.push('#8d8d86'); // needs lime
+    return marks;
   }
+
+  private fieldLabel(f: Field) { return `${f.id}|${this.fieldMarks(f).join(',')}`; }
 
   private sweepGrowth() {
     let relabel = false;
@@ -306,11 +311,22 @@ export class View3D implements ViewControls {
     );
     this.scene.add(this.cloudDome);
     if (this.q.envMap) {
+      // Reflections come from a soft, capped gradient rather than the physical sky:
+      // the real sky is very bright near the sun and overflows half-float targets on
+      // many mobile GPUs, which turns every lit surface black.
       this.pmrem = new THREE.PMREMGenerator(this.renderer);
-      const envSky = new Sky();
-      envSky.material = this.skyMesh.material;
-      envSky.scale.setScalar(450);
-      this.envScene.add(envSky);
+      this.envDome = new THREE.Mesh(new THREE.SphereGeometry(50, 32, 16), new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        uniforms: { top: { value: new THREE.Color() }, horizon: { value: new THREE.Color() }, bottom: { value: new THREE.Color() } },
+        vertexShader: 'varying vec3 vDir; void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `uniform vec3 top; uniform vec3 horizon; uniform vec3 bottom; varying vec3 vDir;
+          void main() {
+            float y = vDir.y;
+            vec3 c = y > 0.0 ? mix(horizon, top, pow(y, 0.6)) : mix(horizon, bottom, pow(-y, 0.4));
+            gl_FragColor = vec4(clamp(c, 0.0, 1.5), 1.0);
+          }`,
+      }));
+      this.envScene.add(this.envDome);
     }
   }
 
@@ -401,12 +417,12 @@ export class View3D implements ViewControls {
     this.scene.add(buildTrees(trees));
 
     const label = (x: number, y: number, h: number, text: string) => {
-      const s = textSprite(text, 0.7);
+      const s = tagSprite(text, 1.1, { accent: '#5a503f' });
       s.position.set(x, h, y);
       this.scene.add(s);
     };
-    label(SILO_POS.x, SILO_POS.y, 5.2, 'SILO');
-    label(SELL_UNLOAD.x, ELEVATOR.y + 1, 7.6, '💰 SELL POINT');
+    label(SILO_POS.x, SILO_POS.y, 5.2, 'Silo');
+    label(SELL_UNLOAD.x, ELEVATOR.y + 1, 7.6, 'Sell point');
   }
 
   private buildGrid() {
@@ -442,7 +458,7 @@ export class View3D implements ViewControls {
       plane.position.set(r.x + r.w / 2, 0.02, r.y + r.h / 2);
       plane.renderOrder = 2;
       this.parcelGroup.add(plane, new THREE.Mesh(ribbon(pts.map(p => ({ x: p.x + (p.x > r.x ? -0.2 : 0.2), y: p.y + (p.y > r.y ? -0.2 : 0.2) })), true, 0.14, 0.03), border));
-      const s = textSprite(`🔒 $${parcelPrice(i).toLocaleString()}\nTap to buy`, 1.1);
+      const s = tagSprite(`$${parcelPrice(i).toLocaleString()}`, 2.6, { eyebrow: 'For sale' });
       s.position.set(r.x + r.w / 2, 1.5, r.y + r.h / 2);
       this.parcelGroup.add(s);
     }
@@ -459,7 +475,8 @@ export class View3D implements ViewControls {
       this.fieldGroup.add(line);
       const label = this.fieldLabel(f);
       this.fieldSigs.set(f.id, label);
-      const s = textSprite(label, 0.8, { bg: selected ? 'rgba(120,90,0,0.8)' : 'rgba(0,0,0,0.45)' });
+      const s = tagSprite(`${f.id}`, selected ? 1.6 : 1.25, { marks: this.fieldMarks(f), accent: selected ? '#a8731a' : '#3b6a34' });
+      void label;
       s.position.set(f.center.x, 1.8, f.center.y);
       this.fieldGroup.add(s);
     }
@@ -740,7 +757,11 @@ export class View3D implements ViewControls {
     this.envT += dt;
     if (this.envT < 4) return;
     this.envT = 0;
-    const rt = this.pmrem.fromScene(this.envScene, 0, 1, 1000);
+    const u = (this.envDome!.material as THREE.ShaderMaterial).uniforms;
+    u.horizon.value.copy(this.sky);
+    u.top.value.copy(this.sky).multiplyScalar(0.8).lerp(new THREE.Color(0x4f86c6), 0.3);
+    u.bottom.value.setHex(0x3a4a2c).multiplyScalar(0.3 + 0.7 * Math.min(1, this.sky.g * 1.5));
+    const rt = this.pmrem.fromScene(this.envScene, 0, 1, 100);
     this.envRT?.dispose();
     this.envRT = rt;
     this.scene.environment = rt.texture;
@@ -840,7 +861,7 @@ export class View3D implements ViewControls {
         const model = v.kind === 'tractor' ? buildTractor()
           : v.kind === 'rootHarvester' ? buildRootHarvester() : buildCombine(this.sim.toolWidth('header'));
         model.root.userData.vehicleId = v.id;
-        const bubble = textSprite('⚠️', 0.9);
+        const bubble = tagSprite('Tank full', 0.9);
         bubble.visible = false;
         this.scene.add(model.root, bubble);
         this.pickables.push(model.root);

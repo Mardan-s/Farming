@@ -176,10 +176,10 @@ export const WAGON_CAP = [16000, 24000, 36000];
 export const TRACTOR_SPEED = [3.2, 3.85, 4.65];
 
 export const SHOP_ITEMS: { id: VehicleKind | ToolKind; name: string; icon: string; cost: number; desc: string }[] = [
-  { id: 'tractor', name: 'Tractor', icon: '🚜', cost: 14000, desc: 'Pulls a plow, seeder or wagon. More tractors = work in parallel.' },
+  { id: 'tractor', name: 'Tractor', icon: '🚜', cost: 14000, desc: 'Pulls every implement. More tractors can work at the same time.' },
   { id: 'combine', name: 'Combine', icon: '🌾', cost: 32000, desc: 'Harvests ready crops into its grain tank.' },
   { id: 'plow', name: 'Plow', icon: '⛏️', cost: 3000, desc: 'Turns grass and stubble into plowed soil.' },
-  { id: 'seeder', name: 'Seeder', icon: '🌱', cost: 4500, desc: 'Plants wheat, corn or soybeans on plowed soil.' },
+  { id: 'seeder', name: 'Seeder', icon: '🌱', cost: 4500, desc: 'Plants grain, oilseed and bean crops on plowed soil.' },
   { id: 'wagon', name: 'Grain wagon', icon: '🛒', cost: 3500, desc: 'Carries grain from combines to the silo or sell point.' },
   { id: 'spreader', name: 'Spreader', icon: '🧪', cost: 5000, desc: 'Spreads fertilizer or lime, 6 rows wide.' },
   { id: 'roller', name: 'Roller', icon: '🛞', cost: 3500, desc: 'Firms freshly seeded soil for a small yield bonus.' },

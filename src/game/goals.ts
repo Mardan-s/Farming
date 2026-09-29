@@ -26,7 +26,7 @@ export interface Goal {
 }
 
 export const GOALS: Goal[] = [
-  { title: 'Draw your first field', hint: 'Tap ✏️ Field, then tap at least 4 grid corners on your land.', reward: 500, progress: s => [s.fields, 1] },
+  { title: 'Draw your first field', hint: 'Tap Draw field, then tap at least 4 grid corners on your land.', reward: 500, progress: s => [s.fields, 1] },
   { title: 'Plow the field', hint: 'Tap your field, then tap Plow — the tractor goes by itself.', reward: 400, progress: s => [s.plowed, 60] },
   { title: 'Plant a crop', hint: 'Tap the plowed field, then Plant a crop, and pick one.', reward: 400, progress: s => [s.seeded, 60] },
   { title: 'Harvest your crop', hint: 'When the crop turns golden, tap the field and choose Harvest.', reward: 600, progress: s => [s.harvested, 60] },
