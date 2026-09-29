@@ -8,7 +8,7 @@ import { GOALS } from '../game/goals';
 import { TOOL_NAMES, VEHICLE_NAMES, isHarvester, type Game, type Need, type Op, type Vehicle } from '../game/sim';
 import { parcelRect } from '../game/world';
 import { setMuted, sfx } from '../audio';
-import { getQuality, setQuality, type Quality } from '../render3d/quality';
+import { getQuality, isSafeMode, setQuality, setSafeMode, type Quality } from '../render3d/quality';
 import type { TapInfo, ViewControls, ViewHost } from '../render3d/types';
 import {
   CROP_ICON, OP_ICON, SHOP_ICON, TOOL_ICON, UPGRADE_ICON, VEHICLE_ICON, WEATHER_ICON, icon, stripEmoji,
@@ -75,7 +75,18 @@ export class UI implements ViewHost {
     setMuted(sim.muted);
   }
 
-  attach(view: ViewControls) { this.view = view; }
+  attach(view: ViewControls) {
+    this.view = view;
+    if (isSafeMode()) setTimeout(() => this.toast('Simple graphics are on because your phone couldn\u2019t run the full effects. You can retry in Settings.', 'info', 'quality'), 1500);
+  }
+
+  private reloading = false;
+  onGraphicsFailure() {
+    if (this.reloading) return;
+    this.reloading = true;
+    this.onSave();
+    location.reload();
+  }
 
   // ---------- shell ----------
 
@@ -349,6 +360,11 @@ export class UI implements ViewHost {
       case 'quality':
         if (arg === getQuality()) return;
         setQuality(arg as Quality);
+        this.onSave();
+        location.reload();
+        return;
+      case 'fullGraphics':
+        setSafeMode(null);
         this.onSave();
         location.reload();
         return;
@@ -847,6 +863,7 @@ export class UI implements ViewHost {
             <button class="lrow" data-act="mute"><span class="lr-ico">${icon(sim.muted ? 'mute' : 'sound')}</span><span class="lr-main"><span class="lr-line"><b>Sound</b><i></i><span class="own">${sim.muted ? 'off' : 'on'}</span></span></span></button>
             <div class="lrow static"><span class="lr-ico">${icon('quality')}</span><span class="lr-main"><span class="lr-line"><b>Graphics</b><i></i></span><small>Lower it if the game feels slow. The game reloads.</small></span></div>
           </div>
+          ${isSafeMode() ? `<div class="ledger"><button class="lrow" data-act="fullGraphics"><span class="lr-ico">${icon('warn')}</span><span class="lr-main"><span class="lr-line"><b>Simple graphics are on</b><i></i></span><small>Your phone couldn\u2019t run the full effects. Tap to try them again.</small></span></button></div>` : ''}
           <div class="tabs">${(['low', 'medium', 'high'] as Quality[]).map(q => `<button data-act="quality" data-arg="${q}" class="${getQuality() === q ? 'on' : ''}">${cap1(q)}</button>`).join('')}</div>
           <div class="ledger">
             <button class="lrow" data-act="save"><span class="lr-ico">${icon('save')}</span><span class="lr-main"><span class="lr-line"><b>Save now</b><i></i></span><small>The game also saves by itself.</small></span></button>

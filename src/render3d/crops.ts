@@ -156,8 +156,9 @@ function plantGeometry(type: PlantType): THREE.BufferGeometry {
 
 const uniforms = { uTime: { value: 0 } };
 
-function plantMaterial() {
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0 });
+function plantMaterial(safe: boolean) {
+  const m = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  if (safe) return m;
   m.onBeforeCompile = shader => {
     shader.uniforms.uTime = uniforms.uTime;
     shader.vertexShader = shader.vertexShader
@@ -260,7 +261,7 @@ class ChunkPool {
 
 export class Crops {
   readonly group = new THREE.Group();
-  private material = plantMaterial();
+  private material: THREE.MeshLambertMaterial;
   private geos = new Map<PlantType, THREE.BufferGeometry>();
   private pools = new Map<string, ChunkPool>();
   private cropType = new Map<number, PlantType>(); // cell key -> type currently shown
@@ -270,7 +271,9 @@ export class Crops {
   private q = new THREE.Quaternion();
   private up = new THREE.Vector3(0, 1, 0);
 
-  constructor(private density: number, private grassDensity: number) {}
+  constructor(private density: number, private grassDensity: number, safe = false) {
+    this.material = plantMaterial(safe);
+  }
 
   tick(time: number) { uniforms.uTime.value = time; }
 

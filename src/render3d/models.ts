@@ -5,19 +5,14 @@ import { COMBINE_LEN, COMBINE_WID, HEADER_OFFSET, TOOL_LEN, type ToolKind } from
 
 // Low-poly models built from primitives. Every model faces +x; 1 unit = 1 grid cell.
 
-const mats = new Map<string, THREE.MeshStandardMaterial>();
-/** Painted metal by default; dark colors read as rubber/plastic. */
-export function mat(color: number, roughness?: number, metalness?: number) {
-  const c = new THREE.Color(color);
-  const dark = c.r + c.g + c.b < 0.35;
-  const r = roughness ?? (dark ? 0.85 : 0.45);
-  // No reflection map, so keep metal subtle or it renders dark.
-  const m0 = Math.min(0.2, metalness ?? (dark ? 0 : 0.1));
-  const key = `${color}-${r}-${m0}`;
-  let m = mats.get(key);
+const mats = new Map<number, THREE.MeshLambertMaterial>();
+/** Shared matte material per color. Lambert shading works on every mobile GPU we've seen;
+ * the physically based material failed to compile on some Android phones. */
+export function mat(color: number, _roughness?: number, _metalness?: number) {
+  let m = mats.get(color);
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ color, roughness: r, metalness: m0 });
-    mats.set(key, m);
+    m = new THREE.MeshLambertMaterial({ color });
+    mats.set(color, m);
   }
   return m;
 }
@@ -72,10 +67,10 @@ function wheel(parent: THREE.Object3D, r: number, width: number, x: number, z: n
 
 const GLASS = 0x9fd3ea;
 const LIGHT_OFF = 0xfff4c2;
-const glassMat = () => new THREE.MeshStandardMaterial({ color: 0x5f8aa0, transparent: true, opacity: 0.55, roughness: 0.1, metalness: 0.2 });
+const glassMat = () => new THREE.MeshLambertMaterial({ color: 0x5f8aa0, transparent: true, opacity: 0.55 });
 
 function headlights(parent: THREE.Object3D, x: number, y: number, zs: number[]) {
-  const m = new THREE.MeshStandardMaterial({ color: LIGHT_OFF, emissive: 0xffe9a0, emissiveIntensity: 0, roughness: 0.2 });
+  const m = new THREE.MeshLambertMaterial({ color: LIGHT_OFF, emissive: 0xffe9a0, emissiveIntensity: 0 });
   for (const z of zs) box(parent, 0.04, 0.07, 0.1, m, x, y, z).castShadow = false;
   return m;
 }
@@ -84,7 +79,7 @@ function headlights(parent: THREE.Object3D, x: number, y: number, zs: number[]) 
 function fender(parent: THREE.Object3D, r: number, width: number, x: number, y: number, z: number, color: number) {
   const geo = new THREE.CylinderGeometry(r, r, width, 16, 1, true, -Math.PI / 2, Math.PI);
   const m = new THREE.Mesh(geo, mat(color));
-  (m.material as THREE.MeshStandardMaterial).side = THREE.DoubleSide;
+  (m.material as THREE.MeshLambertMaterial).side = THREE.DoubleSide;
   m.rotation.x = Math.PI / 2;
   return add(parent, m, x, y, z);
 }
@@ -96,7 +91,7 @@ function cab(parent: THREE.Object3D, x: number, y: number, w: number, h: number,
     cyl(parent, 0.022, h, 0x1e1e1e, x + (px * w) / 2, y + h / 2, (pz * d) / 2, 'y', 6);
   }
   rbox(parent, w + 0.1, 0.07, d + 0.1, 0.03, roof, x, y + h + 0.035, 0);
-  const beacon = add(parent, new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.06, 10), new THREE.MeshStandardMaterial({ color: 0xff9a1f, emissive: 0xff7a00, emissiveIntensity: 0.4 })), x - w * 0.3, y + h + 0.1, d * 0.3);
+  const beacon = add(parent, new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.04, 0.06, 10), new THREE.MeshLambertMaterial({ color: 0xff9a1f, emissive: 0xff7a00, emissiveIntensity: 0.4 })), x - w * 0.3, y + h + 0.1, d * 0.3);
   beacon.castShadow = false;
   for (const side of [-1, 1]) {
     box(parent, 0.02, 0.02, 0.12, 0x1e1e1e, x + w * 0.45, y + h * 0.75, side * (d / 2 + 0.06));
@@ -108,7 +103,7 @@ export interface VehicleModel {
   root: THREE.Group;
   body: THREE.Group;
   wheels: THREE.Group[];
-  lights: THREE.MeshStandardMaterial;
+  lights: THREE.MeshLambertMaterial;
   header?: THREE.Group;
   reel?: THREE.Object3D;
   pipe?: THREE.Group;
@@ -236,7 +231,7 @@ export function buildRootHarvester(): VehicleModel {
   box(body, 2.1, 0.55, 1.1, 0x2f7d3a, -0.2, 0.8, 0); // chassis body
   box(body, 1.2, 0.6, 1.2, 0x2f7d3a, -0.55, 1.35, 0); // bunker walls
   box(body, 1.1, 0.05, 1.1, 0x5a4630, -0.55, 1.6, 0); // soil/crop in bunker
-  const glass = new THREE.MeshStandardMaterial({ color: 0x6f9fb8, transparent: true, opacity: 0.6, roughness: 0.1, metalness: 0.2 });
+  const glass = new THREE.MeshLambertMaterial({ color: 0x6f9fb8, transparent: true, opacity: 0.6 });
   box(body, 0.55, 0.5, 0.7, glass, 0.55, 1.35, 0);
   box(body, 0.6, 0.06, 0.78, 0xf5f5f5, 0.55, 1.63, 0);
   box(body, 0.9, 0.1, 0.9, 0x555555, 0.2, 1.1, 0); // sorting deck
@@ -338,7 +333,7 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     box(root, L, H, 0.06, 0x3f8a3a, -0.1, y0 + H / 2, -W / 2);
     box(root, 0.06, H, W, 0x3f8a3a, L / 2 - 0.1, y0 + H / 2, 0);
     box(root, 0.06, H, W, 0x3f8a3a, -L / 2 - 0.1, y0 + H / 2, 0);
-    const fill = new THREE.Mesh(new THREE.BoxGeometry(L - 0.1, 1, W - 0.1), new THREE.MeshStandardMaterial({ color: 0xe2bf5a, flatShading: true }));
+    const fill = new THREE.Mesh(new THREE.BoxGeometry(L - 0.1, 1, W - 0.1), new THREE.MeshLambertMaterial({ color: 0xe2bf5a, flatShading: true }));
     fill.position.set(-0.1, y0, 0);
     fill.visible = false;
     fill.receiveShadow = true;
@@ -378,7 +373,7 @@ export function buildShed(w: number, d: number, wall = 0xa6463a, roof = 0x6f7a80
   ];
   roofGeo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
   roofGeo.computeVertexNormals();
-  const roofMat = new THREE.MeshStandardMaterial({ color: roof, side: THREE.DoubleSide, flatShading: true });
+  const roofMat = new THREE.MeshLambertMaterial({ color: roof, side: THREE.DoubleSide, flatShading: true });
   add(g, new THREE.Mesh(roofGeo, roofMat), 0, 0, 0);
   const gable = new THREE.BufferGeometry();
   gable.setAttribute('position', new THREE.Float32BufferAttribute([
@@ -386,7 +381,7 @@ export function buildShed(w: number, d: number, wall = 0xa6463a, roof = 0x6f7a80
     w / 2, h, d / 2, w / 2, h, -d / 2, w / 2, top - 0.1, 0,
   ], 3));
   gable.computeVertexNormals();
-  add(g, new THREE.Mesh(gable, new THREE.MeshStandardMaterial({ color: wall, side: THREE.DoubleSide })), 0, 0, 0);
+  add(g, new THREE.Mesh(gable, new THREE.MeshLambertMaterial({ color: wall, side: THREE.DoubleSide })), 0, 0, 0);
   return g;
 }
 
@@ -440,8 +435,8 @@ export function buildTrees(points: { x: number; z: number; s: number; v: number 
     return g;
   }))!;
   const trunks = new THREE.InstancedMesh(trunkGeo, mat(0x6b4a2f), points.length);
-  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), points.length);
-  const pines = new THREE.InstancedMesh(pineGeo, new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }), points.length);
+  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({}), points.length);
+  const pines = new THREE.InstancedMesh(pineGeo, new THREE.MeshLambertMaterial({ flatShading: true }), points.length);
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const c = new THREE.Color();

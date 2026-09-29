@@ -15,6 +15,8 @@ export interface ViewHost {
   attach(view: ViewControls): void;
   onTap(info: TapInfo): void;
   frame(dt: number): void;
+  /** Called once when a shader fails; the host should save and reload into safe mode. */
+  onGraphicsFailure?(): void;
   readonly drawMode: boolean;
   readonly draft: Pt[];
   readonly draftCells: Pt[];

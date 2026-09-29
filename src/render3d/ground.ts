@@ -47,7 +47,7 @@ function noiseTexture() {
 }
 
 /** Large patches of lighter/darker ground plus fine grain, in world space. */
-function addDetail(mat: THREE.MeshStandardMaterial, noise: THREE.Texture) {
+function addDetail(mat: THREE.MeshLambertMaterial, noise: THREE.Texture) {
   mat.onBeforeCompile = shader => {
     shader.uniforms.uNoise = { value: noise };
     shader.vertexShader = shader.vertexShader
@@ -67,7 +67,7 @@ function addDetail(mat: THREE.MeshStandardMaterial, noise: THREE.Texture) {
 export class Ground {
   readonly group = new THREE.Group();
   private chunks: Chunk[] = [];
-  private mats: THREE.MeshStandardMaterial[] = [];
+  private mats: THREE.MeshLambertMaterial[] = [];
   private wetness = -1;
   private cols = Math.ceil(MAP_W / CHUNK);
   private current = new Int16Array(MAP_W * MAP_H).fill(-1);
@@ -85,7 +85,7 @@ export class Ground {
         const tex = new THREE.CanvasTexture(canvas);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = anisotropy;
-        const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, metalness: 0 });
+        const mat = new THREE.MeshLambertMaterial({ map: tex });
         if (detail) addDetail(mat, detail);
         this.mats.push(mat);
         const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
@@ -99,7 +99,7 @@ export class Ground {
     // Endless meadow beyond the map edge.
     const outside = new THREE.Mesh(
       new THREE.PlaneGeometry(900, 900),
-      new THREE.MeshStandardMaterial({ color: 0x5e9c42, roughness: 1 }),
+      new THREE.MeshLambertMaterial({ color: 0x5e9c42 }),
     );
     outside.rotation.x = -Math.PI / 2;
     outside.position.set(MAP_W / 2, -0.02, MAP_H / 2);

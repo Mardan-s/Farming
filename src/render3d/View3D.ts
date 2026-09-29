@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import { QUALITY, getQuality } from './quality';
+import { QUALITY, getQuality, isSafeMode, setSafeMode } from './quality';
 import {
   COMBINE_LEN, CROP_DEFS, ELEVATOR, HEADER_OFFSET, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS,
   PARCEL_W, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, parcelPrice,
@@ -74,7 +74,8 @@ export class View3D implements ViewControls {
   private hemi = new THREE.HemisphereLight(0xb8d4ff, 0x4a5a3a, 1.1);
   private q = QUALITY[getQuality()];
   private ground: Ground;
-  private crops = new Crops(this.q.plantDensity, this.q.grassDensity);
+  private safe = isSafeMode();
+  private crops = new Crops(this.q.plantDensity, this.q.grassDensity, this.safe);
   private skyMesh = new Sky();
   private cloudDome!: THREE.Mesh;
   private pmrem!: THREE.PMREMGenerator;
@@ -124,6 +125,16 @@ export class View3D implements ViewControls {
 
   constructor(parent: HTMLElement, private sim: Game, private host: ViewHost) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    // If any shader fails on this device, save and reload in safe mode (no custom shaders).
+    this.renderer.debug.onShaderError = (gl, program, vs, fs) => {
+      const log = [gl.getProgramInfoLog(program), gl.getShaderInfoLog(vs), gl.getShaderInfoLog(fs)].filter(Boolean).join(' | ');
+      console.error('Shader failed:', log);
+      if (!this.safe) {
+        setSafeMode(log || 'shader error');
+        this.safe = true;
+        this.host.onGraphicsFailure?.();
+      }
+    };
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.q.pixelRatio));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.78;
@@ -138,11 +149,11 @@ export class View3D implements ViewControls {
     this.sun.shadow.bias = -0.0006;
     this.sun.shadow.normalBias = 0.02;
 
-    this.ground = new Ground(buildTiles(), this.renderer.capabilities.getMaxAnisotropy(), this.q.detailGround);
+    this.ground = new Ground(buildTiles(), this.renderer.capabilities.getMaxAnisotropy(), this.q.detailGround && !this.safe);
     this.scene.add(this.ground.group, this.crops.group, this.particles.points, this.fieldGroup, this.parcelGroup, this.draftGroup);
     this.paintAll();
     this.buildScenery();
-    this.buildSky();
+    if (!this.safe) this.buildSky();
     this.buildHills();
     this.syncGrass();
 
@@ -342,7 +353,7 @@ export class View3D implements ViewControls {
       const rx = MAP_W * 0.75 + rnd() * 40, rz = MAP_H * 0.9 + rnd() * 40;
       const r = 22 + rnd() * 28;
       const color = new THREE.Color().setHSL(0.26 + rnd() * 0.06, 0.38, 0.28 + rnd() * 0.1);
-      const hill = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 1, flatShading: true }));
+      const hill = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color, flatShading: true }));
       hill.position.set(cx + Math.cos(a) * rx, -r * 0.55, cz + Math.sin(a) * rz);
       hill.scale.set(r, r * (0.55 + rnd() * 0.35), r * (0.8 + rnd() * 0.4));
       hill.receiveShadow = true;
@@ -368,7 +379,7 @@ export class View3D implements ViewControls {
 
     // Fence around the farmyard.
     const fence = new THREE.Group();
-    const postMat = new THREE.MeshStandardMaterial({ color: 0x7a5a3a });
+    const postMat = new THREE.MeshLambertMaterial({ color: 0x7a5a3a });
     const edges: [number, number, number, number][] = [
       [YARD.x, YARD.y, YARD.x + YARD.w, YARD.y], [YARD.x, YARD.y, YARD.x, YARD.y + YARD.h],
       [YARD.x + YARD.w, YARD.y, YARD.x + YARD.w, YARD.y + YARD.h - 0],
@@ -391,7 +402,7 @@ export class View3D implements ViewControls {
 
     // Road center dashes.
     const dashGeo = new THREE.PlaneGeometry(1, 0.12).rotateX(-Math.PI / 2);
-    const dashes = new THREE.InstancedMesh(dashGeo, new THREE.MeshStandardMaterial({ color: 0xf2d15c }), Math.ceil(MAP_W / 2));
+    const dashes = new THREE.InstancedMesh(dashGeo, new THREE.MeshLambertMaterial({ color: 0xf2d15c }), Math.ceil(MAP_W / 2));
     const m = new THREE.Matrix4();
     for (let i = 0; i < dashes.count; i++) {
       m.makeTranslation(i * 2 + 0.5, 0.01, ROAD.y + ROAD.h / 2);
@@ -517,7 +528,7 @@ export class View3D implements ViewControls {
       }
     }
     pts.forEach((p, i) => {
-      const dot = new THREE.Mesh(new THREE.CylinderGeometry(i === 0 ? 0.3 : 0.22, i === 0 ? 0.3 : 0.22, 0.12, 20), new THREE.MeshStandardMaterial({ color: i === 0 ? 0xffe066 : 0xffffff }));
+      const dot = new THREE.Mesh(new THREE.CylinderGeometry(i === 0 ? 0.3 : 0.22, i === 0 ? 0.3 : 0.22, 0.12, 20), new THREE.MeshLambertMaterial({ color: i === 0 ? 0xffe066 : 0xffffff }));
       dot.position.set(p.x, 0.08, p.y);
       this.draftGroup.add(dot);
       if (i === 0 && pts.length >= 4) this.firstCorner = dot;
@@ -721,6 +732,9 @@ export class View3D implements ViewControls {
     const elev = Math.sin(ang);
     const sunDir = new THREE.Vector3(-Math.cos(ang), Math.max(-0.3, elev) * 0.9, 0.45).normalize();
     this.sunDir.copy(sunDir);
+    if (this.safe) {
+      this.skyMesh.visible = false;
+    } else {
     const u = this.skyMesh.material.uniforms;
     u.sunPosition.value.copy(sunDir);
     u.turbidity.value = 4 + this.cloud * 12;
@@ -730,6 +744,7 @@ export class View3D implements ViewControls {
     const dome = this.cloudDome.material as THREE.MeshBasicMaterial;
     dome.opacity = this.cloud * 0.85;
     dome.color.copy(this.skyGrey).multiplyScalar(0.2 + 0.8 * day);
+    }
 
     // Light comes from the sun by day and a cool moon at night.
     const lightDir = day > 0.05 ? new THREE.Vector3(sunDir.x, Math.max(0.35, sunDir.y), sunDir.z).normalize()
@@ -846,7 +861,7 @@ export class View3D implements ViewControls {
         view.fill.visible = f > 0.01;
         view.fill.scale.y = Math.max(0.01, f * 0.52);
         view.fill.position.y = 0.45 + view.fill.scale.y / 2;
-        if (t.load.crop) (view.fill.material as THREE.MeshStandardMaterial).color.setHex(CROP_DEFS[t.load.crop].color);
+        if (t.load.crop) (view.fill.material as THREE.MeshLambertMaterial).color.setHex(CROP_DEFS[t.load.crop].color);
       }
     }
   }
