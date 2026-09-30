@@ -3,7 +3,7 @@ import {
   GAME_MIN_PER_SEC, HEADER_OFFSET, HEADER_WIDTH, HITCH_OFFSET, LIME_HARVESTS, MINUTES_PER_DAY, OFFLINE_CAP_MIN,
   OFFLINE_RATE, OP_DEFS, PLOW_WIDTH, ROOT_SPEED, ROOT_TANK, SEEDER_WIDTH, SELL_UNLOAD, SHOP_ITEMS, SILO_CAP, SILO_UNLOAD,
   SPEEDS, START_MONEY, START_PARCEL, TOOL_LEN, TOOL_SLOTS, TRACTOR_SPEED, UNLOAD_RATE, UPGRADES, VEHICLE_SLOTS,
-  WAGON_CAP, WEATHER_DEFS, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
+  WAGON_CAP, WEATHER_DEFS, WEATHER_HOURS, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
   FUEL_CAP, FUEL_PRICE, FUEL_USE, LOAN_DAILY_RATE, LOAN_MAX, LOAN_STEP, MAP_H, OVERRIPE_DAYS, PUMP, REFUEL_RATE,
   REPAIR_COST_PER_PCT, SEASONS, SEASON_DAYS, SEASON_NAMES, STORM_CHANCE, WAGE_PER_SEC, WEAR_PER_SEC, WET_LIMIT, WET_RATE,
   type CropId, type Op, type Season, type ToolKind, type UpgradeId, type VehicleKind, type Weather,
@@ -407,7 +407,8 @@ export class Game {
     while (this.clock >= this.weatherChangeAt) {
       this.weather = this.weatherNext;
       this.weatherNext = this.pickWeather(this.weather);
-      this.weatherChangeAt += (3 + Math.random() * 6) * 60;
+      const [lo, hi] = WEATHER_HOURS[this.weather];
+      this.weatherChangeAt += (lo + Math.random() * (hi - lo)) * 60;
     }
     this.events.emit('weather', this.weather);
     if (this.weatherNext === 'storm') {
@@ -1549,6 +1550,9 @@ export class Game {
     if (data.driveSpread) g.driveSpread = data.driveSpread;
     g.nextId = data.nextId;
     g.nextFieldId = data.nextFieldId;
+    // Rain passes quickly now; don't keep an old save stuck in a long wet spell.
+    if (g.weather === 'rain' || g.weather === 'storm') g.weatherChangeAt = Math.min(g.weatherChangeAt, g.clock + 2 * 60);
+    if (g.weatherNext === 'rain' || g.weatherNext === 'storm') g.weatherNext = 'sun';
 
     // Hybrid time: the farm keeps growing while closed, at a slower rate.
     const elapsedSec = Math.max(0, (Date.now() - data.savedAt) / 1000);

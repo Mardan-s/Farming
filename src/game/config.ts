@@ -156,11 +156,13 @@ export const LIME_HARVESTS = 3; // harvests before a cell needs lime again
 
 export type Weather = 'sun' | 'cloudy' | 'rain' | 'storm';
 export const WEATHER_DEFS: Record<Weather, { name: string; icon: string; next: [Weather, number][] }> = {
-  sun: { name: 'Sunny', icon: '☀️', next: [['sun', 0.45], ['cloudy', 0.4], ['rain', 0.15]] },
-  cloudy: { name: 'Cloudy', icon: '⛅', next: [['sun', 0.35], ['cloudy', 0.25], ['rain', 0.32], ['storm', 0.08]] },
-  rain: { name: 'Rain', icon: '🌧️', next: [['cloudy', 0.45], ['rain', 0.3], ['storm', 0.12], ['sun', 0.13]] },
-  storm: { name: 'Thunderstorm', icon: '⛈️', next: [['rain', 0.6], ['cloudy', 0.4]] },
+  sun: { name: 'Sunny', icon: '☀️', next: [['sun', 0.6], ['cloudy', 0.36], ['rain', 0.04]] },
+  cloudy: { name: 'Cloudy', icon: '⛅', next: [['sun', 0.48], ['cloudy', 0.42], ['rain', 0.09], ['storm', 0.01]] },
+  rain: { name: 'Rain', icon: '🌧️', next: [['cloudy', 0.6], ['sun', 0.3], ['rain', 0.1]] },
+  storm: { name: 'Thunderstorm', icon: '⛈️', next: [['cloudy', 0.55], ['rain', 0.45]] },
 };
+/** Game hours each kind of weather lasts, [min, max]. Rain and storms pass quickly. */
+export const WEATHER_HOURS: Record<Weather, [number, number]> = { sun: [3, 9], cloudy: [3, 9], rain: [1.5, 4], storm: [1.5, 4] };
 
 // Vehicle geometry (cells). Tools hitch behind the tractor.
 export const TRACTOR_LEN = 1.6;
