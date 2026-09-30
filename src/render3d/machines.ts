@@ -30,6 +30,16 @@ function cy(p: THREE.Object3D, r0: number, r1: number, len: number, c: Mat, x: n
   if (axis === 'z') g.rotateX(Math.PI / 2);
   return put(p, g, c, x, y, z);
 }
+/** A solid bar (square or round) from point a to point b, so parts always meet what they join. */
+function link(p: THREE.Object3D, a: [number, number, number], b: [number, number, number], t: number, c: Mat, round = false) {
+  const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b);
+  const len = va.distanceTo(vb);
+  const geo = round ? new THREE.CylinderGeometry(t / 2, t / 2, len, 10) : new THREE.BoxGeometry(t, len, t);
+  const mesh = put(p, geo, c, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vb.sub(va).normalize());
+  return mesh;
+}
+
 /** A side profile (x, y) extruded across z with rounded edges, centered on z = 0. */
 function extrude(profile: [number, number][], depth: number, bevel = 0.025) {
   const shape = new THREE.Shape(profile.map(([x, y]) => new THREE.Vector2(x, y)));
@@ -229,6 +239,8 @@ export function buildTractor(color = 0xc8392b): VehicleModel {
   bx(body, 1.12, 0.16, 0.32, dark, 0.12, 0.36, 0);
   bx(body, 0.55, 0.16, 0.28, 0x44484c, 0.35, 0.45, 0);
   bx(body, 0.1, 0.07, 0.62, dark, 0.53, 0.24, 0);
+  cy(body, 0.065, 0.075, 0.64, dark, -0.38, 0.37, 0, 'z'); // rear axle housings out to the hubs
+  for (const sgn of [-1, 1]) cy(body, 0.035, 0.035, 0.14, dark, 0.53, 0.24, sgn * 0.33); // front kingpins
   // Sloped hood with rounded edges.
   put(body, extrude([[-0.02, 0.44], [0.8, 0.44], [0.86, 0.5], [0.87, 0.62], [0.8, 0.7], [0.4, 0.765], [-0.02, 0.8]], 0.38, 0.03), red, 0, 0, 0);
   bx(body, 0.34, 0.012, 0.2, black, 0.52, 0.778, 0, 0, 0, 0.16); // top intake
@@ -352,6 +364,9 @@ export function buildCombine(headerWidth: number): VehicleModel {
     wheels.push(wheel(piv, 0.3, 0.2, 0, 0, 0xc9ccce, s));
     return piv;
   });
+  cy(body, 0.08, 0.08, W - 0.1, dark, 0.45, 0.5, 0, 'z'); // front drive axle
+  cy(body, 0.05, 0.05, W - 0.3, dark, -0.85, 0.3, 0, 'z'); // rear steering axle
+  for (const sgn of [-1, 1]) link(body, [-0.85, 0.46, sgn * 0.3], [-0.85, 0.3, sgn * 0.3], 0.07, dark);
   // Main body: a long side profile, sloping up to the engine at the back.
   put(body, extrude([[-1.25, 0.45], [0.92, 0.45], [0.98, 0.62], [0.98, 1.18], [0.4, 1.24], [-0.95, 1.3], [-1.25, 1.12]], W * 0.66, 0.04), yel, 0, 0, 0);
   bx(body, L * 0.7, 0.06, W * 0.7, dark, -0.15, 0.44, 0);
@@ -477,20 +492,36 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
   let fill: THREE.Mesh | undefined;
   if (kind === 'plow') {
     const blue = paint(0x3d7fc0, 0.14);
-    // Diagonal main beam carrying the plow bodies.
+    // Bodies step back diagonally; the main beam runs straight through the top of every leg.
     const n = Math.max(2, width * 2);
-    bx(root, 0.14, 0.12, width + 0.2, blue, 0.12, 0.5, 0, 0, 0.22, 0);
-    const mould = new THREE.CylinderGeometry(0.22, 0.22, 0.26, 14, 1, true, 0, Math.PI * 0.55);
-    const mouldMat = new THREE.MeshLambertMaterial({ color: 0xb9bec2, side: THREE.DoubleSide });
-    for (let i = 0; i < n; i++) {
+    const k = 0.3;
+    const bodyAt = (i: number) => {
       const z = -width / 2 + (i + 0.5) * (width / n);
-      const x = 0.12 - z * 0.22;
-      bx(root, 0.05, 0.36, 0.05, blue, x - 0.05, 0.32, z); // leg
-      put(root, mould, mouldMat, x - 0.18, 0.2, z + 0.06, 0.3, 0.7, 0.9); // moldboard
-      bx(root, 0.22, 0.03, 0.09, 0x5a5f63, x - 0.08, 0.06, z, 0, 0.4, 0.1); // share
-      cy(root, 0.13, 0.13, 0.02, 0xc9cdd0, x + 0.18, 0.16, z + 0.04, 'z', 16); // coulter disc
+      return { x: 0.3 - (z + width / 2) * k, z };
+    };
+    const first = bodyAt(0), last = bodyAt(n - 1);
+    const beamY = 0.5;
+    link(root, [first.x + 0.12, beamY, first.z - 0.1], [last.x - 0.08, beamY, last.z + 0.05], 0.12, blue);
+    // Headstock to the front of the beam, with a brace.
+    link(root, [len / 2 + 0.1, 0.4, 0], [first.x + 0.1, beamY, first.z - 0.05], 0.1, blue);
+    link(root, [len / 2 + 0.1, 0.4, 0.1], [bodyAt(Math.min(1, n - 1)).x, beamY, bodyAt(Math.min(1, n - 1)).z], 0.06, blue);
+    const mould = new THREE.CylinderGeometry(0.2, 0.2, 0.24, 12, 1, true, 0, Math.PI / 2);
+    const mouldMat = doubleSided(0xa9aeb2);
+    for (let i = 0; i < n; i++) {
+      const { x, z } = bodyAt(i);
+      link(root, [x, beamY, z], [x - 0.02, 0.12, z], 0.05, blue); // leg
+      put(root, mould, mouldMat, x - 0.2, 0.16, z, 0.15, 0, 0); // curved moldboard turning soil outward
+      put(root, new THREE.ConeGeometry(0.05, 0.2, 4).rotateZ(-Math.PI / 2), 0x5a5f63, x + 0.06, 0.07, z + 0.02); // share point
+      bx(root, 0.3, 0.14, 0.015, 0x6a6f73, x - 0.1, 0.1, z - 0.02); // landside
+      link(root, [x + 0.05, beamY, z], [x + 0.2, 0.2, z - 0.05], 0.035, blue); // coulter arm
+      cy(root, 0.12, 0.12, 0.015, 0xc9cdd0, x + 0.2, 0.17, z - 0.05, 'z', 16); // coulter disc
     }
-    wheels.push(wheel(root, 0.18, 0.1, -0.3, width / 2 + 0.05, 0x3d7fc0, 1));
+    // Depth wheel on an arm off the end of the beam.
+    const wz = last.z + 0.22, wx = last.x - 0.15, wr = 0.18;
+    link(root, [last.x - 0.05, beamY, last.z + 0.05], [wx, beamY, wz - 0.08], 0.06, blue);
+    link(root, [wx, beamY, wz - 0.08], [wx, wr, wz - 0.08], 0.05, blue);
+    cy(root, 0.02, 0.02, 0.1, 0x888888, wx, wr, wz - 0.04, 'z');
+    wheels.push(wheel(root, wr, 0.1, wx, wz, 0x3d7fc0, 1));
   } else if (kind === 'seeder') {
     const teal = paint(0x2a8a7a, 0.14);
     rb(root, 0.55, 0.38, width * 0.96, 0.05, teal, 0.02, 0.66, 0); // hopper
@@ -505,24 +536,51 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
       cy(root, 0.05, 0.05, 0.05, 0x222222, -0.4, 0.06, z, 'z', 10); // press wheel
     }
     for (let z = -width / 2 + 0.1; z < width / 2; z += 0.18) bx(root, 0.012, 0.16, 0.012, 0x555555, -0.52, 0.1, z, 0, 0, 0.5); // harrow
+    for (const sgn of [-1, 1]) {
+      const hz = sgn * (width / 2 + 0.09);
+      link(root, [-0.18, 0.34, sgn * (width / 2 - 0.05)], [0.02, 0.22, sgn * (width / 2 - 0.02)], 0.06, dark); // swing arm
+      cy(root, 0.025, 0.025, 0.12, 0x888888, 0.02, 0.22, hz - sgn * 0.06, 'z'); // stub axle
+      link(root, [0.02, 0.22, sgn * (width / 2 - 0.02)], [0.02, 0.5, sgn * (width * 0.46)], 0.05, dark); // strut to hopper
+    }
     wheels.push(wheel(root, 0.22, 0.13, 0.02, width / 2 + 0.09, 0x777777, 1), wheel(root, 0.22, 0.13, 0.02, -width / 2 - 0.09, 0x777777, -1));
   } else if (kind === 'spreader') {
     const blue = paint(0x2e7dc2, 0.14);
-    // Conical hopper with a mesh screen, twin discs with vanes underneath.
-    put(root, new THREE.CylinderGeometry(0.5, 0.2, 0.55, 4, 1, false, Math.PI / 4).scale(0.9, 1, 1.25), paint(0xd9dde0, 0.12), 0.05, 0.72, 0);
-    bx(root, 0.66, 0.04, 0.9, blue, 0.05, 1.0, 0);
-    decal(root, grilleTex(), 0.6, 0.84, 0.05, 1.025, 0, 0).rotation.x = -Math.PI / 2;
-    bx(root, 0.8, 0.05, 0.1, blue, 0.05, 0.36, 0);
-    for (const z of [0.18, -0.18]) {
-      cy(root, 0.15, 0.15, 0.02, 0x666666, -0.3, 0.3, z, 'y', 16);
-      for (let v = 0; v < 4; v++) bx(root, 0.13, 0.04, 0.01, 0x333333, -0.3 + Math.cos(v * 1.57) * 0.07, 0.33, z + Math.sin(v * 1.57) * 0.07, 0, v * 1.57, 0);
+    const wr = 0.28, wz = 0.62, ax = 0.1;
+    // Chassis: two side rails joined to the drawbar, and an axle straight through to both hubs.
+    for (const sgn of [-1, 1]) link(root, [0.5, 0.42, sgn * 0.12], [-0.4, 0.42, sgn * 0.34], 0.07, blue);
+    bx(root, 0.07, 0.07, 0.72, blue, -0.4, 0.42, 0);
+    bx(root, 0.07, 0.07, 0.36, blue, 0.5, 0.42, 0);
+    cy(root, 0.035, 0.035, wz * 2, 0x3a3a3a, ax, wr, 0, 'z');
+    for (const sgn of [-1, 1]) {
+      link(root, [ax, 0.42, sgn * 0.3], [ax, wr, sgn * 0.3], 0.06, blue); // axle hanger
+      fender(root, wr + 0.06, 0.18, ax, wr, sgn * wz, blue, Math.PI * 0.7);
+      link(root, [ax, 0.42, sgn * 0.33], [ax, 0.56, sgn * (wz - 0.02)], 0.03, blue); // fender stay
     }
-    wheels.push(wheel(root, 0.28, 0.14, 0.1, 0.6, 0x2e7dc2, 1), wheel(root, 0.28, 0.14, 0.1, -0.6, 0x2e7dc2, -1));
+    // Hopper on four posts, with a mesh screen on top.
+    const hy = 0.8, hh = 0.5;
+    put(root, new THREE.CylinderGeometry(0.5, 0.18, hh, 4, 1, false, Math.PI / 4).scale(0.95, 1, 1.15), paint(0xd9dde0, 0.12), 0, hy, 0);
+    bx(root, 0.72, 0.04, 0.84, blue, 0, hy + hh / 2 + 0.02, 0);
+    decal(root, grilleTex(), 0.66, 0.78, 0, hy + hh / 2 + 0.045, 0, 0).rotation.x = -Math.PI / 2;
+    for (const [px, pz] of [[0.26, 0.28], [0.26, -0.28], [-0.26, 0.28], [-0.26, -0.28]]) {
+      link(root, [px, 0.42, pz], [px * 0.95, hy + 0.05, pz * 1.05], 0.05, blue);
+    }
+    // Outlet down to a gearbox, which drives the two spinning discs.
+    bx(root, 0.14, 0.12, 0.14, 0x555555, 0, hy - hh / 2 - 0.06, 0);
+    bx(root, 0.2, 0.1, 0.46, 0x3a3a3a, -0.28, 0.4, 0);
+    link(root, [0, hy - hh / 2 - 0.1, 0], [-0.22, 0.42, 0], 0.08, 0x555555);
+    for (const z of [0.17, -0.17]) {
+      cy(root, 0.02, 0.02, 0.1, 0x777777, -0.3, 0.33, z);
+      cy(root, 0.15, 0.15, 0.02, 0x666666, -0.3, 0.27, z, 'y', 16);
+      for (let v = 0; v < 4; v++) bx(root, 0.13, 0.035, 0.01, 0x333333, -0.3 + Math.cos(v * 1.57) * 0.07, 0.3, z + Math.sin(v * 1.57) * 0.07, 0, v * 1.57, 0);
+    }
+    wheels.push(wheel(root, wr, 0.14, ax, wz, 0x2e7dc2, 1), wheel(root, wr, 0.14, ax, -wz, 0x2e7dc2, -1));
   } else if (kind === 'roller') {
     const green = paint(0x2d7a3a, 0.14);
     bx(root, 0.3, 0.1, width, green, 0.22, 0.56, 0);
-    bx(root, 0.36, 0.06, 0.1, green, 0.02, 0.5, width / 2 - 0.05);
-    bx(root, 0.36, 0.06, 0.1, green, 0.02, 0.5, -width / 2 + 0.05);
+    for (const sgn of [-1, 1]) {
+      link(root, [0.22, 0.56, sgn * (width / 2 - 0.03)], [-0.12, 0.26, sgn * (width / 2 + 0.02)], 0.07, green); // side arm to the axle
+      cy(root, 0.05, 0.05, 0.06, 0x333333, -0.12, 0.26, sgn * (width / 2 + 0.02), 'z'); // bearing
+    }
     // Ridged Cambridge rings.
     const ring = new THREE.TorusGeometry(0.24, 0.035, 6, 18).rotateY(Math.PI / 2);
     for (let z = -width / 2 + 0.06; z < width / 2 - 0.02; z += 0.09) put(root, ring, 0x6b7075, -0.12, 0.26, z, 0, 0, 0, false);
@@ -536,7 +594,12 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     for (let row = 0; row < 3; row++) {
       for (let z = -width / 2 + 0.05 + row * 0.04; z < width / 2; z += 0.12) put(root, tine, 0x222222, -0.08 - row * 0.1, 0.26, z, 0, 0, Math.PI * 0.9, false);
     }
-    for (const s of [-1, 1]) wheels.push(wheel(root, 0.14, 0.08, 0.12, s * (width / 2 - 0.2), 0x777777, s));
+    for (const sgn of [-1, 1]) {
+      const wz = sgn * (width / 2 - 0.2);
+      link(root, [0.12, 0.52, wz - sgn * 0.07], [0.12, 0.14, wz - sgn * 0.07], 0.04, orange); // wheel leg
+      cy(root, 0.02, 0.02, 0.08, 0x888888, 0.12, 0.14, wz - sgn * 0.04, 'z');
+      wheels.push(wheel(root, 0.14, 0.08, 0.12, wz, 0x777777, sgn));
+    }
   } else if (kind === 'sprayer') {
     const tank = paint(0xf2f2f2, 0.2);
     // Chassis, rounded tank with a fill lid, pump and a trussed boom with nozzles.
@@ -552,6 +615,14 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
       bx(root, 0.02, 0.14, 0.02, 0x666666, -0.45, boomY - 0.1, z);
       cy(root, 0.018, 0.012, 0.03, 0x2e6fd0, -0.45, boomY - 0.18, z);
     }
+    // Axle under the chassis out to both hubs, tank straps, and struts holding the boom.
+    cy(root, 0.035, 0.035, 0.9, 0x3a3a3a, 0.1, 0.3, 0, 'z');
+    for (const sgn of [-1, 1]) {
+      link(root, [0.1, 0.42, sgn * 0.3], [0.1, 0.3, sgn * 0.3], 0.07, dark);
+      link(root, [-0.37, 0.44, sgn * 0.25], [-0.45, boomY, sgn * 0.25], 0.05, dark);
+      link(root, [-0.37, 0.44, sgn * 0.3], [-0.45, boomY + 0.2, sgn * Math.min(width / 2 - 0.1, 1.1)], 0.03, 0xd9a21c);
+    }
+    for (const x of [-0.12, 0.36]) put(root, new THREE.TorusGeometry(0.335, 0.02, 4, 20, Math.PI).rotateY(Math.PI / 2), 0x333333, x, 0.82, 0, 0, 0, 0, false);
     wheels.push(wheel(root, 0.3, 0.15, 0.1, 0.45, 0x333333, 1), wheel(root, 0.3, 0.15, 0.1, -0.45, 0x333333, -1));
   } else if (kind === 'planter') {
     const red = paint(0xc0392b, 0.14);
@@ -563,6 +634,12 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
       // Ridging hood that shapes the potato row.
       put(root, new THREE.CylinderGeometry(0.17, 0.17, 0.4, 10, 1, true, 0, Math.PI).rotateZ(Math.PI / 2), new THREE.MeshLambertMaterial({ color: 0x6b6b6b, side: THREE.DoubleSide }), -0.5, 0.12, z);
       cy(root, 0.012, 0.012, 0.4, 0x333333, -0.2, 0.45, z);
+      for (const o of [-0.22, 0.22]) link(root, [0.28, 0.46, z + o], [0.12, 0.68, z + o * 0.9], 0.05, dark); // hopper posts
+      link(root, [0.2, 0.44, z], [-0.42, 0.24, z], 0.05, dark); // arm to the ridging hood
+    }
+    for (const sgn of [-1, 1]) {
+      link(root, [0.3, 0.45, sgn * (width / 2 - 0.05)], [0.2, 0.22, sgn * (width / 2 - 0.02)], 0.06, dark);
+      cy(root, 0.025, 0.025, 0.12, 0x888888, 0.2, 0.22, sgn * (width / 2 + 0.03), 'z');
     }
     wheels.push(wheel(root, 0.22, 0.12, 0.2, width / 2 + 0.1, 0x777777, 1), wheel(root, 0.22, 0.12, 0.2, -width / 2 - 0.1, 0x777777, -1));
   } else {
@@ -588,6 +665,8 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     fill.receiveShadow = true;
     root.add(fill);
     for (const x of [-0.42, 0.22]) {
+      cy(root, 0.04, 0.04, W + 0.2, 0x2a2a2a, x, 0.26, 0, 'z'); // axle through both hubs
+      for (const sgn of [-1, 1]) bx(root, 0.36, 0.05, 0.08, 0x3a3a3a, x, 0.31, sgn * 0.3); // leaf spring
       wheels.push(wheel(root, 0.26, 0.15, x, W / 2 + 0.1, 0xd8d8d8, 1), wheel(root, 0.26, 0.15, x, -W / 2 - 0.1, 0xd8d8d8, -1));
     }
   }
