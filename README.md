@@ -19,13 +19,21 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 
 **Root crops:** potatoes and sugar beets need the **root planter** and the self-propelled **root harvester**. Tractors borrow implements from other parked tractors automatically.
 
-**Drive it yourself.** Tap a machine, then **Drive**. The camera drops behind it. Steer with the left stick and use the gas and brake pedals on the right (brake again to reverse). On PC, use WASD or the arrow keys, E for the implement and Esc to get out. **Lower** the tool or header to work the ground you drive over. The buttons change with where you are: **Hitch** a tool behind you (or drop yours anywhere; workers will fetch it from there), **Sell load** at the sell point, **Into silo** at the silo, **Refuel** at the pump. Pull a wagon alongside a harvester to take its grain.
+**Drive it yourself.** Tap a machine, then **Drive**. The camera drops behind it. One joystick does it all: push up to drive, pull back to brake and reverse, tilt left or right to steer. You bump into buildings, fences and trees. On PC, use WASD or the arrow keys, E for the implement and Esc to get out. **Lower** the tool or header to work the ground you drive over. The buttons change with where you are: **Hitch** a tool behind you (or drop yours anywhere; workers will fetch it from there), **Sell load** at the sell point, **Into silo** at the silo, **Refuel** at the pump. Pull a wagon alongside a harvester to take its grain.
 
 **Running costs.** Hired workers are paid for every second they work, and each job row shows an estimate. You don't pay yourself. Machines burn diesel (the pump is next to the silo; workers top up by themselves) and wear out: under 30% condition they slow down, so repair them from the machine's card. Tap your balance for the farm accounts (today vs. yesterday) and a bank loan with daily interest.
 
 **Seasons.** Each season lasts 4 days: spring, summer, autumn, winter. Every crop has planting seasons (wheat, barley and canola can be sown in autumn), and nothing grows in winter, when snow covers the farm.
 
 **Weather that matters.** Rain soaks the crop, and combines can't cut until the sun dries it. Thunderstorms flatten ripe crops (−40% yield on those cells), especially crops left standing long after they ripen. Tap the clock for the forecast and harvest before a storm.
+
+**Pathfinding.** Hired workers follow the road's center lane, leave the farmyard through its gate, and drive around buildings and other fields instead of across them.
+
+**Market.** Tap a crop in the Market for its two-week price chart, highs and lows, and a **price alert** that messages you the day it sells high (15% over its usual price).
+
+**Day and night.** Daylight lasts about 2½ minutes at 1×, and nights pass in about 20 seconds.
+
+**Landscape.** Turn the phone sideways and menus open in a side panel so the farm stays in view.
 
 Grow the farm: buy **land plots**, more **machines**, and **upgrades** (wider plows and seeders, bigger combine tanks and wagons, faster tractors). The **market** price for each crop changes daily. Store grain in the silo and sell when prices spike.
 
@@ -59,6 +67,5 @@ npm run build      # typecheck + single-file build into dist/
 
 ## Roadmap ideas
 
-- Roads and pathfinding around fields
 - Livestock, contracts and more machines
 - Wrap for the iOS/Android stores (Capacitor) and PC (Electron/Steam)

@@ -3,7 +3,7 @@ import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { QUALITY, getQuality, isSafeMode, setSafeMode } from './quality';
 import {
   COMBINE_LEN, CROP_DEFS, ELEVATOR, HEADER_OFFSET, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS,
-  PARCEL_W, PUMP, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, parcelPrice,
+  PARCEL_W, PUMP, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, YARD_GATE, parcelPrice,
   type Op, type ToolKind, type Weather,
 } from '../game/config';
 import { CellState, type Field } from '../game/field';
@@ -401,7 +401,8 @@ export class View3D implements ViewControls {
     const postMat = new THREE.MeshLambertMaterial({ color: 0x7a5a3a });
     const edges: [number, number, number, number][] = [
       [YARD.x, YARD.y, YARD.x + YARD.w, YARD.y], [YARD.x, YARD.y, YARD.x, YARD.y + YARD.h],
-      [YARD.x + YARD.w, YARD.y, YARD.x + YARD.w, YARD.y + YARD.h - 0],
+      // East side, with a gate toward the fields.
+      [YARD.x + YARD.w, YARD.y, YARD.x + YARD.w, YARD_GATE.y0], [YARD.x + YARD.w, YARD_GATE.y1, YARD.x + YARD.w, YARD.y + YARD.h],
     ];
     for (const [x0, y0, x1, y1] of edges) {
       const len = Math.hypot(x1 - x0, y1 - y0);
@@ -416,6 +417,13 @@ export class View3D implements ViewControls {
         p.castShadow = true;
         fence.add(p);
       }
+    }
+    // Gate posts.
+    for (const gy of [YARD_GATE.y0, YARD_GATE.y1]) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.0, 0.16), postMat);
+      post.position.set(YARD.x + YARD.w, 0.5, gy);
+      post.castShadow = true;
+      fence.add(post);
     }
     this.scene.add(fence);
 

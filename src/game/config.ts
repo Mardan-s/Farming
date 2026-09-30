@@ -16,6 +16,8 @@ export const START_PARCEL = 8; // bottom-left (row 2, col 0)
 export interface Rect { x: number; y: number; w: number; h: number }
 
 export const YARD: Rect = { x: 4, y: 44, w: 10, h: 18 };
+/** Opening in the yard's east fence, toward the fields (rows y0..y1-1). */
+export const YARD_GATE = { y0: 48, y1: 51 };
 export const ROAD: Rect = { x: 0, y: 63, w: MAP_W, h: 3 };
 export const ELEVATOR: Rect = { x: 103, y: 56, w: 12, h: 7 };
 
@@ -41,8 +43,17 @@ export function slotPos(slots: { x: number; y: number }[], i: number) {
 }
 
 // Time: game minutes advanced per real second at 1x speed.
-export const GAME_MIN_PER_SEC = 8;
+export const GAME_MIN_PER_SEC = 8; // average over a whole day
 export const MINUTES_PER_DAY = 1440;
+/** Daylight runs slowly and nights fly by: about 2.5 real minutes of day, 20 seconds of night at 1x. */
+export const DAY_START = 6 * 60;
+export const DAY_END = 20 * 60;
+export const DAY_MIN_PER_SEC = 5.6;
+export const NIGHT_MIN_PER_SEC = 30;
+export function minutesPerSec(clock: number) {
+  const t = ((clock % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  return t >= DAY_START && t < DAY_END ? DAY_MIN_PER_SEC : NIGHT_MIN_PER_SEC;
+}
 export const SPEEDS = [1, 2, 5];
 export const OFFLINE_RATE = 0.25; // fraction of 1x speed while the app is closed
 export const OFFLINE_CAP_MIN = 2 * MINUTES_PER_DAY;

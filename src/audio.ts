@@ -120,6 +120,7 @@ export const sfx = {
   select: () => { tone(520, 0.07, 'triangle', 0.1); tone(780, 0.09, 'triangle', 0.08, 0.05); },
   confirm: () => { tone(440, 0.08, 'triangle', 0.1); tone(660, 0.08, 'triangle', 0.1, 0.07); tone(880, 0.12, 'triangle', 0.09, 0.14); },
   error: () => tone(180, 0.18, 'square', 0.05, 0, 120),
+  bump: () => { tone(90, 0.16, 'square', 0.08, 0, 55); tone(140, 0.08, 'triangle', 0.06); },
   cash: () => { tone(1320, 0.07, 'square', 0.04); tone(1760, 0.18, 'square', 0.04, 0.07); },
   corner: () => tone(900, 0.05, 'sine', 0.07),
   goal: () => [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.18, 'triangle', 0.09, i * 0.09)),

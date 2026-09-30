@@ -62,8 +62,8 @@ export class UI implements ViewHost {
   private view!: ViewControls;
   private pending: { msg: string; yes: string; run: () => void } | null = null;
   private driveKey = '';
-  private stick = { id: -1, cx: 0, cy: 0, steer: 0 };
-  private pedal = { gas: new Set<number>(), brake: new Set<number>() };
+  private stick = { id: -1, cx: 0, cy: 0, steer: 0, throttle: 0 };
+  private marketCrop: CropId | null = null;
   private keys = new Set<string>();
 
   constructor(private sim: Game, private onSave: () => void, private onReset: () => void) {
@@ -78,6 +78,7 @@ export class UI implements ViewHost {
     });
     sim.events.on('money', (_x: number, _y: number, amt: number) => { if (amt > 0) sfx.cash(); });
     sim.events.on('drive', () => this.syncDriving());
+    sim.events.on('bump', () => sfx.bump());
     sim.events.on('season', (season: string) => {
       const msg: Record<string, string> = {
         spring: 'Spring is here. Plant wheat, barley, oats, corn, soybeans, sunflowers, potatoes or beets.',
@@ -131,10 +132,9 @@ export class UI implements ViewHost {
         </div>
         <p class="dr-status" data-live="dstatus"></p>
         <div class="dr-actions" id="dr-actions"></div>
-        <div class="stick" id="stick" aria-label="Steering"><span class="stick-knob"></span></div>
-        <div class="pedals">
-          <button class="pedal brake" id="brake" aria-label="Brake and reverse">${icon('brake')}<small>Brake</small></button>
-          <button class="pedal gas" id="gas" aria-label="Gas">${icon('gas')}<small>Gas</small></button>
+        <div class="stick" id="stick" aria-label="Drive: push up to go, pull back to brake and reverse, left and right to steer">
+          <span class="stick-label up">Go</span><span class="stick-label down">Back</span>
+          <span class="stick-knob"></span>
         </div>
       </div>
       <div id="panel"></div>
@@ -211,41 +211,39 @@ export class UI implements ViewHost {
 
   // ---------- driving ----------
 
+  /** One joystick: up drives forward, down brakes then reverses, left and right steer. */
   private setupDriveControls() {
     const stick = $('#stick');
     const knob = stick.querySelector('.stick-knob') as HTMLElement;
-    const moveKnob = (dx: number) => { knob.style.transform = `translateX(${dx}px)`; };
+    const moveKnob = (dx: number, dy: number) => { knob.style.transform = `translate(${dx}px, ${dy}px)`; };
+    const track = (e: PointerEvent) => {
+      const r = stick.getBoundingClientRect().width / 2 - 26;
+      let dx = e.clientX - this.stick.cx, dy = e.clientY - this.stick.cy;
+      const len = Math.hypot(dx, dy);
+      if (len > r) { dx *= r / len; dy *= r / len; }
+      const dead = (v: number) => (Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85);
+      this.stick.steer = dead(dx / r);
+      this.stick.throttle = dead(-dy / r);
+      moveKnob(dx, dy);
+    };
     stick.addEventListener('pointerdown', e => {
       stick.setPointerCapture(e.pointerId);
       const r = stick.getBoundingClientRect();
-      this.stick = { id: e.pointerId, cx: r.left + r.width / 2, cy: r.top + r.height / 2, steer: 0 };
+      this.stick = { id: e.pointerId, cx: r.left + r.width / 2, cy: r.top + r.height / 2, steer: 0, throttle: 0 };
       stick.classList.add('on');
+      track(e);
       e.preventDefault();
     });
-    stick.addEventListener('pointermove', e => {
-      if (e.pointerId !== this.stick.id) return;
-      const r = stick.getBoundingClientRect().width / 2 - 20;
-      const dx = Math.max(-r, Math.min(r, e.clientX - this.stick.cx));
-      this.stick.steer = dx / r;
-      moveKnob(dx);
-    });
+    stick.addEventListener('pointermove', e => { if (e.pointerId === this.stick.id) track(e); });
     const release = (e: PointerEvent) => {
       if (e.pointerId !== this.stick.id) return;
-      this.stick = { id: -1, cx: 0, cy: 0, steer: 0 };
-      moveKnob(0);
+      this.stick = { id: -1, cx: 0, cy: 0, steer: 0, throttle: 0 };
+      moveKnob(0, 0);
       stick.classList.remove('on');
     };
     stick.addEventListener('pointerup', release);
     stick.addEventListener('pointercancel', release);
-    for (const name of ['gas', 'brake'] as const) {
-      const el = document.getElementById(name)!;
-      const set = this.pedal[name];
-      el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); set.add(e.pointerId); el.classList.add('on'); e.preventDefault(); });
-      const up = (e: PointerEvent) => { set.delete(e.pointerId); if (!set.size) el.classList.remove('on'); };
-      el.addEventListener('pointerup', up);
-      el.addEventListener('pointercancel', up);
-      el.addEventListener('lostpointercapture', up);
-    }
+    stick.addEventListener('lostpointercapture', release);
     // Keyboard driving on PC: WASD or arrows, E for the implement, Esc to leave.
     window.addEventListener('keydown', e => {
       if (this.sim.drivenId == null) return;
@@ -261,9 +259,9 @@ export class UI implements ViewHost {
     let steer = this.stick.steer;
     if (k.has('a') || k.has('arrowleft')) steer = -1;
     if (k.has('d') || k.has('arrowright')) steer = 1;
-    let throttle = 0;
-    if (this.pedal.gas.size || k.has('w') || k.has('arrowup')) throttle = 1;
-    if (this.pedal.brake.size || k.has('s') || k.has('arrowdown')) throttle = -1;
+    let throttle = this.stick.throttle;
+    if (k.has('w') || k.has('arrowup')) throttle = 1;
+    if (k.has('s') || k.has('arrowdown')) throttle = -1;
     this.sim.setDriveInput(steer, throttle);
   }
 
@@ -351,7 +349,7 @@ export class UI implements ViewHost {
       }
       case 'home': this.view.centerOnCells(14, 52); break;
       case 'modal': sfx.tap(); this.openModal(arg as Modal); return;
-      case 'closeModal': sfx.tap(); this.modal = null; this.render(true); return;
+      case 'closeModal': sfx.tap(); this.modal = null; this.marketCrop = null; this.render(true); return;
       case 'shopTab': this.shopTab = arg as typeof this.shopTab; sfx.tap(); break;
       case 'close': sfx.tap(); this.clearSelection(); this.setPanel({ kind: 'home' }); return;
       case 'back': {
@@ -438,7 +436,7 @@ export class UI implements ViewHost {
         const err = sim.startDriving(this.selectedVehicle);
         if (err) { sfx.error(); this.toast(err, 'bad'); return; }
         sfx.select();
-        if (!sim.stats.drivenCells) this.toast('Left stick steers, right pedals drive. Lower the tool to work as you go.', 'info', 'wheel');
+        if (!sim.stats.drivenCells) this.toast('Push the stick up to drive, pull it back to brake or reverse, and tilt it to steer. Lower the tool to work as you go.', 'info', 'wheel');
         return;
       }
       case 'exitDrive': sfx.tap(); sim.stopDriving(); return;
@@ -536,6 +534,14 @@ export class UI implements ViewHost {
       case 'sellSilo': {
         const got = sim.sellSilo(arg as CropId);
         if (got > 0) this.toast(`Sold ${CROP_DEFS[arg as CropId].name.toLowerCase()} for ${money(got)}.`, 'good');
+        break;
+      }
+      case 'marketCrop': this.marketCrop = (arg || null) as CropId | null; sfx.tap(); break;
+      case 'priceAlert': {
+        const c = arg as CropId;
+        const on = sim.togglePriceAlert(c);
+        sfx.tap();
+        if (on) this.toast(`We'll tell you when ${CROP_DEFS[c].name.toLowerCase()} sells high (${money(sim.highPrice(c))} or more).`, 'info', 'market');
         break;
       }
       case 'deliverTo': sim.deliverTo = arg as 'silo' | 'sell'; sfx.tap(); break;
@@ -1061,6 +1067,7 @@ export class UI implements ViewHost {
         return `<div class="card">${head('Shop', `Balance <span class="fig">${money(sim.money)}</span>`)}${tabs}<div class="ledger">${body}</div></div>`;
       }
       case 'market': {
+        if (this.marketCrop) return this.renderCropPrices(this.marketCrop);
         const rows = CROPS.map(c => {
           const hist = sim.priceHistory[c];
           const base = CROP_DEFS[c].basePrice;
@@ -1068,9 +1075,9 @@ export class UI implements ViewHost {
           const cur = sim.prices[c];
           const trend = cur > prev ? '<span class="up">▲</span>' : cur < prev ? '<span class="down">▼</span>' : '';
           const tag = cur >= base * 1.15 ? '<span class="stamp-mini green">High</span>' : cur <= base * 0.85 ? '<span class="stamp-mini">Low</span>' : '';
-          return `<div class="lrow static">
+          return `<div class="lrow static tap" data-act="marketCrop" data-arg="${c}" role="button" tabindex="0">
             <span class="lr-ico">${icon(CROP_ICON[c])}</span>
-            <span class="lr-main"><span class="lr-line"><b>${CROP_DEFS[c].name}</b>${tag}<i></i><span class="fig">${trend}${money(cur)}</span></span>
+            <span class="lr-main"><span class="lr-line"><b>${CROP_DEFS[c].name}</b>${tag}${sim.priceAlerts.includes(c) ? `<span class="bell" title="Price alert on">${icon('flag')}</span>` : ''}<i></i><span class="fig">${trend}${money(cur)}</span></span>
               <small>In silo <span class="fig" data-live="silo:${c}"></span></small></span>
             ${this.sparkline(hist, base)}
             <button class="mini" data-act="sellSilo" data-arg="${c}" ${sim.silo[c] > 0 ? '' : 'disabled'}>Sell</button>
@@ -1078,7 +1085,7 @@ export class UI implements ViewHost {
         }).join('');
         return `<div class="card">
           ${head('Grain market', 'Prices per 1,000 L')}
-          <p class="note">Prices move every day. Keep grain in the silo and sell when a price is high.</p>
+          <p class="note">Prices move every day. Tap a crop to see its price history and get told when it sells high.</p>
           <div class="ledger">${rows}</div>
           <p class="eyebrow gap">Harvests go to</p>
           <div class="tabs">
@@ -1106,6 +1113,69 @@ export class UI implements ViewHost {
       default:
         return '';
     }
+  }
+
+  /** One crop's price page: two-week chart, highs and lows, and a price alert. */
+  private renderCropPrices(c: CropId) {
+    const sim = this.sim;
+    const d = CROP_DEFS[c];
+    const hist = sim.priceHistory[c];
+    const cur = sim.prices[c];
+    const base = d.basePrice;
+    const high = sim.highPrice(c);
+    const hi = Math.max(...hist), lo = Math.min(...hist);
+    const avg = hist.reduce((a, b) => a + b, 0) / hist.length;
+    const vs = Math.round((cur / base - 1) * 100);
+    const alert = sim.priceAlerts.includes(c);
+    const verdict = cur >= high ? '<span class="stamp green">Sell now</span>' : cur <= base * 0.85 ? '<span class="stamp red">Hold</span>' : '<span class="stamp brown">Fair</span>';
+    // Chart geometry.
+    const W = 320, H = 150, L = 38, R = 8, T = 10, B = 22;
+    const ymin = Math.min(lo, base * 0.8) * 0.97, ymax = Math.max(hi, high) * 1.03;
+    const X = (i: number) => L + (hist.length < 2 ? (W - L - R) : (i / (hist.length - 1)) * (W - L - R));
+    const Y = (p: number) => T + (1 - (p - ymin) / (ymax - ymin)) * (H - T - B);
+    const pts = hist.map((p, i) => `${X(i).toFixed(1)},${Y(p).toFixed(1)}`).join(' ');
+    const area = `${X(0).toFixed(1)},${H - B} ${pts} ${X(hist.length - 1).toFixed(1)},${H - B}`;
+    const ticks = [ymin + (ymax - ymin) * 0.1, (ymin + ymax) / 2, ymax - (ymax - ymin) * 0.1]
+      .map(p => `<text x="${L - 5}" y="${Y(p) + 3.5}" text-anchor="end">${Math.round(p)}</text><line class="grid" x1="${L}" x2="${W - R}" y1="${Y(p)}" y2="${Y(p)}"/>`).join('');
+    const days = hist.map((_, i) => i).filter(i => i === 0 || i === hist.length - 1 || (hist.length > 6 && i === Math.floor((hist.length - 1) / 2)))
+      .map(i => `<text x="${X(i)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === hist.length - 1 ? 'end' : 'middle'}">${i === hist.length - 1 ? 'Today' : `${hist.length - 1 - i} d ago`}</text>`).join('');
+    const dots = hist.map((p, i) => p >= high ? `<circle class="hot" cx="${X(i)}" cy="${Y(p)}" r="3.2"/>` : '').join('');
+    const chart = `<svg class="pchart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${d.name} price over the last ${hist.length} days">
+      ${ticks}
+      <rect class="band" x="${L}" y="${T}" width="${W - L - R}" height="${Math.max(0, Y(high) - T)}"/>
+      <line class="base" x1="${L}" x2="${W - R}" y1="${Y(base)}" y2="${Y(base)}"/>
+      <text class="lbl" x="${L + 4}" y="${Y(base) + 12}">usual ${money(base)}</text>
+      <text class="lbl hot" x="${W - R - 2}" y="${Math.max(T + 10, Y(high) - 4)}" text-anchor="end">high ${money(high)}+</text>
+      <polygon class="area" points="${area}"/>
+      <polyline class="line" points="${pts}"/>
+      ${dots}
+      <circle class="now" cx="${X(hist.length - 1)}" cy="${Y(cur)}" r="4.5"/>
+      ${days}
+    </svg>`;
+    const stat = (label: string, v: string) => `<div><dt>${label}</dt><dd class="fig">${v}</dd></div>`;
+    return `<div class="card">
+      <header class="sh-head">
+        <button class="sq" data-act="marketCrop" data-arg="" aria-label="Back">${icon('back')}</button>
+        <span class="sh-ico">${icon(CROP_ICON[c])}</span>
+        <div class="sh-title"><small class="eyebrow">Per 1,000 L</small><h3>${d.name} <span class="fig">${money(cur)}</span></h3></div>
+        ${verdict}
+        <button class="sq" data-act="closeModal" aria-label="Close">${icon('close')}</button>
+      </header>
+      <p class="note">${vs >= 0 ? `${vs}% above` : `${-vs}% below`} the usual price. ${cur >= high ? 'That\u2019s a high price: a good day to sell.' : `It counts as high at ${money(high)}.`}</p>
+      ${chart}
+      <dl class="soil">
+        ${stat('Today', money(cur))}${stat(`${hist.length}-day high`, money(hi))}${stat('Low', money(lo))}${stat('Average', money(avg))}
+      </dl>
+      <div class="ledger">
+        <button class="lrow ${alert ? 'next' : ''}" data-act="priceAlert" data-arg="${c}"><span class="lr-ico">${icon('flag')}</span>
+          <span class="lr-main"><span class="lr-line"><b>Price alert</b><i></i><span class="own">${alert ? 'on' : 'off'}</span></span>
+          <small>Get a message the day ${d.name.toLowerCase()} sells for ${money(high)} or more.</small></span></button>
+        <div class="lrow static"><span class="lr-ico">${icon('silo')}</span>
+          <span class="lr-main"><span class="lr-line"><b>In your silo</b><i></i><span class="fig" data-live="silo:${c}"></span></span>
+          <small>Worth ${money((sim.silo[c] / 1000) * cur)} today</small></span>
+          <button class="mini" data-act="sellSilo" data-arg="${c}" ${sim.silo[c] > 0 ? '' : 'disabled'}>Sell</button></div>
+      </div>
+    </div>`;
   }
 
   private sparkline(hist: number[], base: number) {

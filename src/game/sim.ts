@@ -1,14 +1,15 @@
 import {
   AUTO_UNLOAD_THRESHOLD, COMBINE_SPEED, COMBINE_WORK_FACTOR, COMBINE_TANK, CROPS, CROP_DEFS, FIXED_TOOL_WIDTH,
-  GAME_MIN_PER_SEC, HEADER_OFFSET, HEADER_WIDTH, HITCH_OFFSET, LIME_HARVESTS, MINUTES_PER_DAY, OFFLINE_CAP_MIN,
+  GAME_MIN_PER_SEC, minutesPerSec, HEADER_OFFSET, HEADER_WIDTH, HITCH_OFFSET, LIME_HARVESTS, MINUTES_PER_DAY, OFFLINE_CAP_MIN,
   OFFLINE_RATE, OP_DEFS, PLOW_WIDTH, ROOT_SPEED, ROOT_TANK, SEEDER_WIDTH, SELL_UNLOAD, SHOP_ITEMS, SILO_CAP, SILO_UNLOAD,
   SPEEDS, START_MONEY, START_PARCEL, TOOL_LEN, TOOL_SLOTS, TRACTOR_SPEED, UNLOAD_RATE, UPGRADES, VEHICLE_SLOTS,
   WAGON_CAP, WEATHER_DEFS, WEATHER_HOURS, WORK_SPEED_FACTOR, emptyCropRecord, parcelPrice, slotPos,
-  FUEL_CAP, FUEL_PRICE, FUEL_USE, LOAN_DAILY_RATE, LOAN_MAX, LOAN_STEP, MAP_H, OVERRIPE_DAYS, PUMP, REFUEL_RATE,
+  FUEL_CAP, FUEL_PRICE, FUEL_USE, LOAN_DAILY_RATE, LOAN_MAX, LOAN_STEP, OVERRIPE_DAYS, PUMP, REFUEL_RATE,
   REPAIR_COST_PER_PCT, SEASONS, SEASON_DAYS, SEASON_NAMES, STORM_CHANCE, WAGE_PER_SEC, WEAR_PER_SEC, WET_LIMIT, WET_RATE,
   type CropId, type Op, type Season, type ToolKind, type UpgradeId, type VehicleKind, type Weather,
 } from './config';
 import { planPasses, type Axis } from './coverage';
+import { blockedAt, findPath, isRoad } from './path';
 import { CellState, Field, READY_STAGE, Weeds, type FieldSave } from './field';
 import { angleLerp, dist, type Pt } from './geometry';
 import { GOALS, newStats, type Stats } from './goals';
@@ -72,6 +73,9 @@ export interface Vehicle {
   waiting: boolean;
   /** Signed ground speed while you drive it. */
   speed: number;
+  /** Planned road route to the current destination (runtime only). */
+  route?: Pt[];
+  routeTo?: Pt;
 }
 
 export interface Tool {
@@ -160,6 +164,8 @@ export class Game {
   stats: Stats = newStats();
   goalIdx = 0;
   deliverTo: Dest = 'sell';
+  /** Crops the player wants a message about when their price is high. */
+  priceAlerts: CropId[] = [];
   muted = false;
   weather: Weather = 'sun';
   weatherNext: Weather = 'cloudy';
@@ -321,7 +327,7 @@ export class Game {
     const dt = Math.min(dtReal, 0.1);
     const prevDay = this.day;
     const prevSeason = this.season;
-    const mins = dt * GAME_MIN_PER_SEC * this.speed;
+    const mins = dt * minutesPerSec(this.clock) * this.speed;
     this.growth += growthBetween(this.clock, this.clock + mins);
     this.clock += mins;
     if (this.day !== prevDay) this.newDay();
@@ -446,8 +452,13 @@ export class Game {
       this.events.emit('toast', `📈 ${CROP_DEFS[c].name} demand spike! $${this.prices[c]} / 1000 L`, 'good');
     }
     for (const c of CROPS) {
+      const prev = this.priceHistory[c][this.priceHistory[c].length - 1] ?? this.prices[c];
       this.priceHistory[c].push(this.prices[c]);
       if (this.priceHistory[c].length > 14) this.priceHistory[c].shift();
+      const high = this.highPrice(c);
+      if (this.priceAlerts.includes(c) && this.prices[c] >= high && prev < high) {
+        this.events.emit('toast', `📈 ${CROP_DEFS[c].name} is selling high today: $${this.prices[c]} per 1,000 L`, 'good');
+      }
     }
     this.events.emit('day', this.day);
   }
@@ -461,12 +472,12 @@ export class Game {
     switch (step.t) {
       case 'goto':
         v.status = 'Driving';
-        if (this.moveTo(v, step.x, step.y, this.speedOf(v), dt)) v.steps.shift();
+        if (this.driveTo(v, step.x, step.y, this.speedOf(v), dt)) v.steps.shift();
         break;
       case 'park': {
         v.status = 'Returning to the farmyard';
         const p = slotPos(VEHICLE_SLOTS, v.slot);
-        if (this.moveTo(v, p.x, p.y, this.speedOf(v), dt)) v.steps.shift();
+        if (this.driveTo(v, p.x, p.y, this.speedOf(v), dt)) v.steps.shift();
         break;
       }
       case 'attach': {
@@ -535,6 +546,25 @@ export class Game {
     return v.fuel < FUEL_CAP[v.kind] * below ? [{ t: 'goto', x: PUMP.x + 1.2, y: PUMP.y }, { t: 'refuel' }] : [];
   }
 
+  /** Travels along a planned route (roads first, around buildings and other fields). */
+  private driveTo(v: Vehicle, tx: number, ty: number, speed: number, dt: number, retarget = 0.5): boolean {
+    if (Math.hypot(tx - v.x, ty - v.y) < 1.5) {
+      v.route = undefined;
+      return this.moveTo(v, tx, ty, speed, dt);
+    }
+    if (!v.route || !v.routeTo || Math.hypot(v.routeTo.x - tx, v.routeTo.y - ty) > retarget) {
+      v.route = findPath(this.world, v, { x: tx, y: ty });
+      v.routeTo = { x: tx, y: ty };
+    }
+    const wp = v.route[0] ?? { x: tx, y: ty };
+    const road = isRoad(v.x, v.y) ? 1.25 : 1;
+    if (this.moveTo(v, wp.x, wp.y, speed * road, dt)) {
+      v.route.shift();
+      if (v.route.length === 0) { v.route = undefined; return Math.hypot(tx - v.x, ty - v.y) < 0.05; }
+    }
+    return false;
+  }
+
   private moveTo(v: Vehicle, tx: number, ty: number, speed: number, dt: number): boolean {
     const dx = tx - v.x;
     const dy = ty - v.y;
@@ -598,7 +628,7 @@ export class Game {
     const speed = this.speedOf(v) * (wp.work ? factor : 1);
     const px = v.x;
     const py = v.y;
-    const arrived = this.moveTo(v, wp.x, wp.y, speed, dt);
+    const arrived = wp.work ? this.moveTo(v, wp.x, wp.y, speed, dt) : this.driveTo(v, wp.x, wp.y, speed, dt);
     if (wp.work) {
       this.applyWork(v, s, field, px, py, wp.work);
       v.working = s.op;
@@ -726,7 +756,7 @@ export class Game {
     const d = dist(v, target);
     if (d > 0.8) {
       v.status = `Driving to ${c.name}`;
-      this.moveTo(v, target.x, target.y, this.speedOf(v) * 1.3, dt);
+      this.driveTo(v, target.x, target.y, this.speedOf(v) * 1.3, dt, 3);
       return;
     }
     const k = Math.min(1, dt * 6);
@@ -1290,8 +1320,18 @@ export class Game {
     const wheelbase = isHarvester(v) ? 1.9 : 1.35;
     v.heading += (v.speed * Math.tan(this.input.steer * 0.6) / wheelbase) * dt;
     v.heading = Math.atan2(Math.sin(v.heading), Math.cos(v.heading));
-    v.x = Math.max(1, Math.min(MAP_W - 1, v.x + Math.cos(v.heading) * v.speed * dt));
-    v.y = Math.max(1, Math.min(MAP_H - 1, v.y + Math.sin(v.heading) * v.speed * dt));
+    const nx = v.x + Math.cos(v.heading) * v.speed * dt, ny = v.y + Math.sin(v.heading) * v.speed * dt;
+    // Bump into buildings, fences and trees: check the bumper on the side we're moving toward.
+    const reach = (isHarvester(v) ? 1.3 : 0.85) * Math.sign(v.speed);
+    const fx = nx + Math.cos(v.heading) * reach, fy = ny + Math.sin(v.heading) * reach;
+    const px = -Math.sin(v.heading) * 0.4, py = Math.cos(v.heading) * 0.4;
+    if (blockedAt(fx, fy) || blockedAt(fx + px, fy + py) || blockedAt(fx - px, fy - py)) {
+      if (Math.abs(v.speed) > 1.5) this.events.emit('bump', v.id);
+      v.speed = 0;
+    } else {
+      v.x = nx;
+      v.y = ny;
+    }
     v.moving = Math.abs(v.speed) > 0.05;
     v.status = op ? `${OP_DEFS[op].verb} · you're driving` : "You're driving";
     this.driverGrain(v, dt);
@@ -1407,6 +1447,15 @@ export class Game {
 
   // ---------- economy ----------
 
+  /** The price that counts as "high" for a crop: 15% over its usual price. */
+  highPrice(c: CropId) { return Math.round(CROP_DEFS[c].basePrice * 1.15); }
+
+  togglePriceAlert(c: CropId) {
+    const on = !this.priceAlerts.includes(c);
+    this.priceAlerts = on ? [...this.priceAlerts, c] : this.priceAlerts.filter(x => x !== c);
+    return on;
+  }
+
   buyParcel(i: number): string | null {
     if (this.owned.has(i)) return 'Already owned';
     const price = parcelPrice(i);
@@ -1500,6 +1549,7 @@ export class Game {
       ledger: this.ledger,
       driveCrop: this.driveCrop,
       driveSpread: this.driveSpread,
+      priceAlerts: this.priceAlerts,
       nextId: this.nextId,
       nextFieldId: this.nextFieldId,
     };
@@ -1548,6 +1598,7 @@ export class Game {
     if (data.ledger) g.ledger = data.ledger;
     if (data.driveCrop) g.driveCrop = data.driveCrop;
     if (data.driveSpread) g.driveSpread = data.driveSpread;
+    if (data.priceAlerts) g.priceAlerts = data.priceAlerts.filter(c => CROPS.includes(c));
     g.nextId = data.nextId;
     g.nextFieldId = data.nextFieldId;
     // Rain passes quickly now; don't keep an old save stuck in a long wet spell.

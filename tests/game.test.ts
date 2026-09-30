@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { FUEL_CAP, MINUTES_PER_DAY, SEASON_DAYS, WET_LIMIT } from '../src/game/config';
+import { FUEL_CAP, MINUTES_PER_DAY, ROAD, SEASON_DAYS, SELL_UNLOAD, VEHICLE_SLOTS, WET_LIMIT, YARD, YARD_GATE } from '../src/game/config';
 import { planPasses } from '../src/game/coverage';
+import { findPath } from '../src/game/path';
 import { CellState } from '../src/game/field';
 import { isSimplePolygon, rasterize } from '../src/game/geometry';
 import { Game, growthBetween, seasonAt } from '../src/game/sim';
@@ -392,6 +393,16 @@ describe('driving yourself', () => {
     expect(combine.tank.crop).toBe('wheat');
   });
 
+  it('bumps into the silo instead of driving through it', () => {
+    const game = new Game();
+    const t = game.vehicles[0];
+    game.startDriving(t.id);
+    t.x = 7; t.y = 52; t.heading = -Math.PI / 2; // facing the silo, north
+    game.setDriveInput(0, 1);
+    run(game, 4);
+    expect(t.y).toBeGreaterThan(49);
+  });
+
   it('a driven vehicle is not dispatched by the AI', () => {
     const game = new Game();
     const tractor = game.vehicles[0];
@@ -399,5 +410,73 @@ describe('driving yourself', () => {
     expect(game.isIdle(tractor)).toBe(false);
     game.orderPark(tractor.id);
     expect(game.drivenId).toBeNull();
+  });
+});
+
+describe('day and night', () => {
+  it('days pass slowly and nights quickly', () => {
+    const game = new Game();
+    game.clock = 12 * 60;
+    game.update(0.1);
+    const day = game.clock - 12 * 60;
+    game.clock = 23 * 60;
+    game.update(0.1);
+    const night = game.clock - 23 * 60;
+    expect(night).toBeGreaterThan(day * 4);
+  });
+});
+
+describe('price alerts', () => {
+  it('tells you when a watched crop sells high', () => {
+    const game = new Game();
+    const toasts: string[] = [];
+    game.events.on('toast', (m: string) => toasts.push(m));
+    expect(game.togglePriceAlert('wheat')).toBe(true);
+    game.prices.wheat = game.highPrice('wheat') + 140;
+    game.priceHistory.wheat = [300];
+    (game as unknown as { newDay(): void }).newDay();
+    // The daily random move is small next to the 140 cushion, so it's still high.
+    expect(toasts.some(t => /Wheat is selling high/.test(t))).toBe(true);
+    const saved = Game.load(JSON.parse(JSON.stringify(game.save()))).game;
+    expect(saved.priceAlerts).toEqual(['wheat']);
+  });
+});
+
+describe('pathfinding', () => {
+  /** Points every half cell along a route. */
+  function sample(from: { x: number; y: number }, route: { x: number; y: number }[]) {
+    const pts: { x: number; y: number }[] = [];
+    let a = from;
+    for (const b of route) {
+      const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.5));
+      for (let i = 1; i <= n; i++) pts.push({ x: a.x + (b.x - a.x) * (i / n), y: a.y + (b.y - a.y) * (i / n) });
+      a = b;
+    }
+    return pts;
+  }
+
+  it('drives to the sell point along the road', () => {
+    const game = new Game();
+    const from = VEHICLE_SLOTS[0];
+    const route = findPath(game.world, from, SELL_UNLOAD);
+    const pts = sample(from, route);
+    const onRoad = pts.filter(p => p.y >= ROAD.y && p.y < ROAD.y + ROAD.h).length;
+    expect(onRoad / pts.length).toBeGreaterThan(0.8);
+    expect(route[route.length - 1]).toEqual(SELL_UNLOAD);
+  });
+
+  it('leaves the farmyard through the gate and goes around other fields', () => {
+    const game = new Game();
+    game.createField(SQUARE); // x 16-28, y 45-55
+    const from = VEHICLE_SLOTS[1];
+    const to = { x: 29.5, y: 48 }; // just past the far side of the field
+    const route = findPath(game.world, from, to);
+    const pts = sample(from, route);
+    // Crosses the east fence only at the gate.
+    const crossing = pts.find(p => p.x >= YARD.x + YARD.w && p.x < YARD.x + YARD.w + 1)!;
+    expect(crossing.y).toBeGreaterThanOrEqual(YARD_GATE.y0 - 0.5);
+    expect(crossing.y).toBeLessThanOrEqual(YARD_GATE.y1 + 0.5);
+    // Never drives over the crop on the field in between.
+    expect(pts.some(p => game.world.fieldIdAt(Math.floor(p.x), Math.floor(p.y)) >= 0)).toBe(false);
   });
 });
