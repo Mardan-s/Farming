@@ -16,9 +16,10 @@ import { Ground } from './ground';
 import { T, buildTiles } from './groundTiles';
 import { disposeSprite, tagSprite, textSprite } from './labels';
 import {
-  box, buildCombine, buildElevator, buildFarmhouse, buildRootHarvester, buildShed, buildSilo, buildTool, buildTractor, buildTrees, setHeader,
-  type ToolModel, type VehicleModel,
+  box, buildElevator, buildFarmhouse, buildShed, buildSilo, buildTrees, type ToolModel, type VehicleModel,
 } from './models';
+import { buildCombine, buildRootHarvester, buildTool, buildTractor, setHeader } from './machines';
+import { setShineLight } from './shine';
 import { Particles } from './particles';
 import { cloudUniforms } from './ground';
 import {
@@ -48,7 +49,7 @@ const FOV = 38;
 /** The pond south of the road, near the farm. */
 const POND = { x: 25, z: 72.2, rx: 5.2, rz: 2.6 };
 
-interface VehicleView { model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number; lights: THREE.Group }
+interface VehicleView { model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number; lights: THREE.Group; lh: number; steer: number }
 
 /** Flat strip following a polyline, lying on the ground. */
 function ribbon(points: Pt[], closed: boolean, width: number, y: number) {
@@ -925,6 +926,7 @@ export class View3D implements ViewControls {
       cam.updateProjectionMatrix();
     }
     this.ground.setSnow(this.snow, day);
+    setShineLight(day);
     this.night = 1 - day;
     (this.stars.material as THREE.PointsMaterial).opacity = Math.max(0, this.night - 0.35) * 1.4 * (1 - this.cloud);
     const moonDir = new THREE.Vector3(-sunDir.x, Math.max(0.25, -sunDir.y + 0.35), -sunDir.z + 0.3).normalize();
@@ -1078,7 +1080,7 @@ export class View3D implements ViewControls {
         const shadow = blob(big ? 3.8 : 2.3, big ? 2.8 : 1.7);
         const lights = buildHeadlights(big ? 9 : 7, big ? 2.2 : 0.9);
         model.root.add(shadow, lights);
-        view = { model, lx: v.x, ly: v.y, emitT: 0, bubble, pipeAngle: Math.PI * 0.94, lights };
+        view = { model, lx: v.x, ly: v.y, emitT: 0, bubble, pipeAngle: Math.PI * 0.94, lights, lh: v.heading, steer: 0 };
         this.vViews.set(v.id, view);
       }
       const m = view.model;
@@ -1089,6 +1091,15 @@ export class View3D implements ViewControls {
       m.root.rotation.y = -v.heading;
       m.body.position.y = v.moving ? Math.abs(Math.sin(this.time * 22 + v.id)) * 0.015 : 0;
       for (const w of m.wheels) w.rotation.z -= moved / w.userData.radius;
+      if (m.steer) {
+        // Steer the wheels: from the stick when you drive, otherwise from how fast the machine turns.
+        let turn = Math.atan2(Math.sin(v.heading - view.lh), Math.cos(v.heading - view.lh)) / Math.max(dt, 1e-3);
+        if (this.sim.drivenId === v.id) turn = this.sim.input.steer * 2.2 * Math.sign(v.speed || 1);
+        const want = THREE.MathUtils.clamp(turn * 0.28, -0.6, 0.6);
+        view.steer += (want - view.steer) * Math.min(1, dt * 8);
+        for (const p of m.steer) p.rotation.y = -view.steer * (m.steerSign ?? 1);
+      }
+      view.lh = v.heading;
       if (v.kind === 'combine') setHeader(m, this.sim.toolWidth('header'));
       if (isHarvester(v)) {
         if (v.working && m.reel) m.reel.rotation.z -= dt * 5;
