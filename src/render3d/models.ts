@@ -17,6 +17,49 @@ export function mat(color: number, _roughness?: number, _metalness?: number) {
   return m;
 }
 
+/**
+ * Bakes a group's static meshes into one mesh per material, in the group's own space, leaving the
+ * `skip` subtrees (wheels, reels, augers) alone. A tire of 40 tread lugs becomes one draw call.
+ */
+export function mergeLocal(group: THREE.Object3D, skip: THREE.Object3D[] = []) {
+  group.updateMatrixWorld(true);
+  const inv = group.matrixWorld.clone().invert();
+  const skipSet = new Set(skip);
+  const byMat = new Map<THREE.Material, { geos: THREE.BufferGeometry[]; cast: boolean; receive: boolean }>();
+  const done: THREE.Mesh[] = [];
+  const m4 = new THREE.Matrix4();
+  const visit = (o: THREE.Object3D) => {
+    for (const c of o.children) {
+      if (skipSet.has(c)) continue;
+      const m = c as THREE.Mesh;
+      if (m.isMesh && !Array.isArray(m.material)) {
+        let g = m.geometry.clone().applyMatrix4(m4.multiplyMatrices(inv, m.matrixWorld));
+        if (g.index) g = g.toNonIndexed();
+        for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'uv') g.deleteAttribute(k);
+        if (!g.getAttribute('uv')) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.getAttribute('position').count * 2), 2));
+        const e = byMat.get(m.material) ?? { geos: [], cast: false, receive: false };
+        e.geos.push(g);
+        e.cast ||= m.castShadow;
+        e.receive ||= m.receiveShadow;
+        byMat.set(m.material, e);
+        done.push(m);
+      }
+      visit(c);
+    }
+  };
+  visit(group);
+  if (done.length < 2) return;
+  for (const m of done) m.removeFromParent();
+  for (const [material, e] of byMat) {
+    const geo = mergeGeometries(e.geos);
+    if (!geo) continue;
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.castShadow = e.cast;
+    mesh.receiveShadow = e.receive;
+    group.add(mesh);
+  }
+}
+
 function add(parent: THREE.Object3D, mesh: THREE.Mesh, x: number, y: number, z: number) {
   mesh.position.set(x, y, z);
   mesh.castShadow = true;
@@ -132,6 +175,8 @@ export function buildTractor(color = 0xc8392b): VehicleModel {
   box(body, 0.1, 0.03, 0.12, 0x2b2b2b, -0.05, 0.28, 0.34); // step
   box(body, 0.12, 0.12, 0.3, 0x2b2b2b, -0.72, 0.36, 0); // rear hitch
   const lights = headlights(body, 0.82, 0.62, [0.14, -0.14]);
+  for (const w of wheels) mergeLocal(w);
+  mergeLocal(body, wheels);
   return { root, body, wheels, lights };
 }
 
@@ -162,6 +207,8 @@ function buildHeader(width: number) {
     }
   }
   for (const z of [width / 2 - 0.1, -width / 2 + 0.1]) box(reel, 0.42, 0.03, 0.03, 0x7a5a10, 0, 0, z).castShadow = false;
+  mergeLocal(reel);
+  mergeLocal(g, [reel]);
   return { g, reel };
 }
 
@@ -203,6 +250,9 @@ export function buildCombine(headerWidth: number): VehicleModel {
   spout.castShadow = true;
   pipe.rotation.y = Math.PI * 0.94; // folded back along the body
 
+  for (const w of wheels) mergeLocal(w);
+  mergeLocal(pipe);
+  mergeLocal(body, [...wheels, pipe]);
   const model: VehicleModel = { root, body, wheels, lights, pipe };
   setHeader(model, headerWidth);
   return model;
@@ -250,6 +300,10 @@ export function buildRootHarvester(): VehicleModel {
   body.add(pipe);
   box(pipe, 1.9, 0.12, 0.4, 0x3a3a3a, 0.95, 0, 0); // unloading conveyor
   pipe.rotation.y = Math.PI * 0.94;
+  for (const w of wheels) mergeLocal(w);
+  mergeLocal(pipe);
+  mergeLocal(digger);
+  mergeLocal(body, [...wheels, pipe, digger]);
   return { root, body, wheels, lights, pipe, header: digger };
 }
 
@@ -341,8 +395,12 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     for (const x of [-0.45, 0.25]) {
       wheels.push(wheel(root, 0.26, 0.14, x, W / 2 + 0.02, 0xd8d8d8), wheel(root, 0.26, 0.14, x, -W / 2 - 0.02, 0xd8d8d8));
     }
+    for (const w of wheels) mergeLocal(w);
+    mergeLocal(root, [...wheels, fill]);
     return { root, kind, width, fill, wheels };
   }
+  for (const w of wheels) mergeLocal(w);
+  mergeLocal(root, wheels);
   return { root, kind, width, wheels };
 }
 
@@ -387,9 +445,29 @@ export function buildShed(w: number, d: number, wall = 0xa6463a, roof = 0x6f7a80
 
 export function buildFarmhouse() {
   const g = buildShed(2.6, 2.2, 0xefe6d2, 0x8a3b30);
-  box(g, 0.5, 0.5, 0.05, GLASS, -0.7, 1.0, 1.11);
-  box(g, 0.5, 0.5, 0.05, GLASS, 0.7, 1.0, 1.11);
+  for (const x of [-0.7, 0.7]) {
+    box(g, 0.5, 0.5, 0.05, GLASS, x, 1.0, 1.11);
+    box(g, 0.58, 0.06, 0.08, 0xffffff, x, 0.72, 1.12); // sill
+    box(g, 0.12, 0.52, 0.04, 0x3f6b4a, x - 0.33, 1.0, 1.12); // shutters
+    box(g, 0.12, 0.52, 0.04, 0x3f6b4a, x + 0.33, 1.0, 1.12);
+  }
   box(g, 0.3, 0.9, 0.3, 0x7a4a3a, 0.8, 2.3, -0.4); // chimney
+  // Porch: deck, posts and a little roof over the door.
+  box(g, 1.6, 0.12, 0.8, 0x9a7b5a, 0, 0.06, 1.5);
+  for (const x of [-0.72, 0.72]) box(g, 0.07, 1.25, 0.07, 0xffffff, x, 0.7, 1.84);
+  const pr = box(g, 1.8, 0.07, 1.0, 0x8a3b30, 0, 1.36, 1.5);
+  pr.rotation.x = 0.18;
+  box(g, 0.5, 0.95, 0.05, 0x6b3a2a, 0, 0.55, 1.11); // door
+  // Garden: picket fence and a flower bed.
+  for (let i = 0; i < 9; i++) box(g, 0.05, 0.35, 0.05, 0xffffff, -1.6 + i * 0.4, 0.17, 2.15);
+  box(g, 3.3, 0.04, 0.03, 0xffffff, 0, 0.26, 2.15);
+  box(g, 0.9, 0.1, 0.25, 0x5a4030, -1.05, 0.05, 1.95);
+  box(g, 0.9, 0.1, 0.25, 0x5a4030, 1.05, 0.05, 1.95);
+  for (let i = 0; i < 10; i++) {
+    const f = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 4), mat([0xe0525a, 0xf4d23c, 0xffffff, 0xb46bd6][i % 4]));
+    f.position.set((i < 5 ? -1.45 : 0.65) + (i % 5) * 0.2, 0.17, 1.92 + ((i * 7) % 3) * 0.04);
+    g.add(f);
+  }
   return g;
 }
 
@@ -408,6 +486,19 @@ export function buildElevator(w: number, d: number) {
   box(g, 4.4, 1.9, 2.4, 0xd7d2c4, w / 2 - 3, 0.95, d / 2 - 1.3); // drive-through pit
   box(g, 3.2, 1.6, 0.05, 0x2b2b2b, w / 2 - 3, 0.8, d / 2 - 0.08);
   return g;
+}
+
+/** Darker undersides and sunlit tops, baked into vertex colors. */
+function shadeCrown(geo: THREE.BufferGeometry, y0: number, y1: number) {
+  const p = geo.getAttribute('position');
+  const n = geo.getAttribute('normal');
+  const col = new Float32Array(p.count * 3);
+  for (let i = 0; i < p.count; i++) {
+    const t = Math.min(1, Math.max(0, (p.getY(i) - y0) / (y1 - y0)));
+    const k = (0.55 + 0.6 * t) * (0.9 + 0.12 * n.getY(i));
+    col[i * 3] = k * 0.97; col[i * 3 + 1] = k; col[i * 3 + 2] = k * 0.9;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
 }
 
 /** Instanced low-poly trees. */
@@ -429,21 +520,25 @@ export function buildTrees(points: { x: number; z: number; s: number; v: number 
   }
   const crownGeo = mergeGeometries(blobs)!;
   crownGeo.computeVertexNormals();
+  shadeCrown(crownGeo, -0.6, 0.75);
   const pineGeo = mergeGeometries([0, 1, 2].map(i => {
     const g = new THREE.ConeGeometry(0.62 - i * 0.14, 0.9, 9);
     g.translate(0, -0.45 + i * 0.5, 0);
     return g;
   }))!;
-  const trunks = new THREE.InstancedMesh(trunkGeo, mat(0x6b4a2f), points.length);
-  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({}), points.length);
-  const pines = new THREE.InstancedMesh(pineGeo, new THREE.MeshLambertMaterial({ flatShading: true }), points.length);
+  shadeCrown(pineGeo, -0.9, 1.3);
+  const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), points.length);
+  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({ vertexColors: true }), points.length);
+  const pines = new THREE.InstancedMesh(pineGeo, new THREE.MeshLambertMaterial({ flatShading: true, vertexColors: true }), points.length);
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
   const c = new THREE.Color();
   let nc = 0, np = 0;
   points.forEach((p, i) => {
-    m.compose(new THREE.Vector3(p.x, 0.4 * p.s, p.z), q, new THREE.Vector3(p.s, p.s, p.s));
+    const birch = p.v >= 0.3 && p.v < 0.42;
+    m.compose(new THREE.Vector3(p.x, 0.4 * p.s * (birch ? 1.3 : 1), p.z), q, new THREE.Vector3(p.s * (birch ? 0.8 : 1), p.s * (birch ? 1.3 : 1), p.s * (birch ? 0.8 : 1)));
     trunks.setMatrixAt(i, m);
+    trunks.setColorAt(i, c.setHex(birch ? 0xe6e1d6 : 0x6b4a2f));
     q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.v * 7);
     if (p.v < 0.3) {
       m.compose(new THREE.Vector3(p.x, 1.4 * p.s, p.z), q, new THREE.Vector3(p.s, p.s, p.s));
@@ -452,7 +547,7 @@ export function buildTrees(points: { x: number; z: number; s: number; v: number 
     } else {
       m.compose(new THREE.Vector3(p.x, 1.25 * p.s, p.z), q, new THREE.Vector3(p.s, p.s * 0.9, p.s));
       crowns.setMatrixAt(nc, m);
-      crowns.setColorAt(nc++, c.setHex([0x3f8f3f, 0x4f9c45, 0x36803a][Math.floor(p.v * 10) % 3]));
+      crowns.setColorAt(nc++, birch ? c.setHex(0x8fbf4f) : c.setHex([0x3f8f3f, 0x4f9c45, 0x36803a, 0x5a9a3a][Math.floor(p.v * 10) % 4]));
     }
     q.identity();
   });

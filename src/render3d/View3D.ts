@@ -20,6 +20,11 @@ import {
   type ToolModel, type VehicleModel,
 } from './models';
 import { Particles } from './particles';
+import { cloudUniforms } from './ground';
+import {
+  Birds, blob, blobField, buildBales, buildHeadlights, buildLamp, buildMoon, buildMountains, buildPond, buildPowerLine,
+  buildStars, buildWildEdges, buildWindmill, mergeStatic, type Pond,
+} from './scenery';
 import type { TapInfo, ViewControls, ViewHost } from './types';
 
 const PITCH = THREE.MathUtils.degToRad(55);
@@ -40,8 +45,10 @@ const WORK_FX: Record<Exclude<Op, 'harvest'>, { color: number; size: [number, nu
   spray: { color: 0xcfe6ff, size: [0.15, 0.5], up: 0.1, life: 0.9, alpha: 0.35, n: 5 },
 };
 const FOV = 38;
+/** The pond south of the road, near the farm. */
+const POND = { x: 25, z: 72.2, rx: 5.2, rz: 2.6 };
 
-interface VehicleView { model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number }
+interface VehicleView { model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number; lights: THREE.Group }
 
 /** Flat strip following a polyline, lying on the ground. */
 function ribbon(points: Pt[], closed: boolean, width: number, y: number) {
@@ -75,6 +82,16 @@ export class View3D implements ViewControls {
   private chaseDist = 13;
   private wasDriving = false;
   private snow = 0;
+  private pond!: Pond;
+  private waterBase = new THREE.Color(0x3f7fa8);
+  private rotor!: THREE.Object3D;
+  private birds!: Birds;
+  private stars!: THREE.Points;
+  private moon!: ReturnType<typeof buildMoon>;
+  private mountains!: ReturnType<typeof buildMountains>;
+  private lamp!: ReturnType<typeof buildLamp>;
+  private night = 0;
+  private cloudDrift = new THREE.Vector2(0.13, 0.41);
   private hillMats: THREE.MeshLambertMaterial[] = [];
   private snowTint = -1;
   private readonly snowColor = new THREE.Color(0xe4eaf0);
@@ -359,7 +376,7 @@ export class View3D implements ViewControls {
     const cx = MAP_W / 2, cz = MAP_H / 2;
     for (let i = 0; i < 46; i++) {
       const a = (i / 46) * Math.PI * 2 + rnd() * 0.1;
-      const rx = MAP_W * 0.75 + rnd() * 40, rz = MAP_H * 0.9 + rnd() * 40;
+      const rx = MAP_W * 0.75 + 28 + rnd() * 40, rz = MAP_H * 0.9 + 28 + rnd() * 40;
       const r = 22 + rnd() * 28;
       const color = new THREE.Color().setHSL(0.26 + rnd() * 0.06, 0.38, 0.28 + rnd() * 0.1);
       const hillMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
@@ -381,7 +398,7 @@ export class View3D implements ViewControls {
     const shed = buildShed(4.6, 3);
     shed.position.set(YARD.x + YARD.w - 2.8, 0, YARD.y + 2.2);
     const house = buildFarmhouse();
-    house.position.set(YARD.x - 2.2, 0, YARD.y + 3);
+    house.position.set(YARD.x - 2.5, 0, YARD.y + 3);
     house.rotation.y = Math.PI / 2;
     const elev = buildElevator(ELEVATOR.w, ELEVATOR.h);
     elev.position.set(ELEVATOR.x + ELEVATOR.w / 2, 0, ELEVATOR.y + ELEVATOR.h / 2);
@@ -394,7 +411,16 @@ export class View3D implements ViewControls {
     box(pump, 1.3, 0.08, 1.1, 0x9a9a92, 0, 0.04, 0);
     pump.position.set(PUMP.x, 0, PUMP.y);
     pump.traverse(o => { o.castShadow = true; });
-    this.scene.add(silo, shed, house, elev, pump);
+    // Pickable buildings stay separate; the rest is baked into a few draw calls.
+    const statics = new THREE.Group();
+    statics.add(shed, house, pump);
+    this.scene.add(silo, elev, mergeStatic(statics));
+    const ground = (w: number, d: number, x: number, z: number, o = 0.9) => { const b = blob(w, d, o); b.position.set(x, 0.035, z); this.scene.add(b); };
+    ground(SILO_RADIUS * 2.8, SILO_RADIUS * 2.8, SILO_POS.x, SILO_POS.y);
+    ground(6, 4.4, YARD.x + YARD.w - 2.8, YARD.y + 2.2);
+    ground(4.2, 3.6, YARD.x - 2.3, YARD.y + 3);
+    ground(ELEVATOR.w + 1.5, ELEVATOR.h + 1.5, ELEVATOR.x + ELEVATOR.w / 2, ELEVATOR.y + ELEVATOR.h / 2, 0.7);
+    ground(1.4, 1.2, PUMP.x, PUMP.y);
     this.pickables.push(silo, elev);
 
     // Fence around the farmyard.
@@ -426,7 +452,7 @@ export class View3D implements ViewControls {
       post.castShadow = true;
       fence.add(post);
     }
-    this.scene.add(fence);
+    this.scene.add(mergeStatic(fence));
 
     // Road center dashes.
     const dashGeo = new THREE.PlaneGeometry(1, 0.12).rotateX(-Math.PI / 2);
@@ -448,12 +474,18 @@ export class View3D implements ViewControls {
         const inParcels = x >= PARCEL_ORIGIN.x - 0.8 && x < PARCEL_ORIGIN.x + PARCEL_COLS * PARCEL_W + 0.8 &&
           y >= PARCEL_ORIGIN.y - 0.8 && y < PARCEL_ORIGIN.y + PARCEL_ROWS * PARCEL_H + 0.8;
         const onRoad = y >= ROAD.y - 0.8 && y < ROAD.y + ROAD.h + 0.8;
-        const nearHouse = x > YARD.x - 5 && x < YARD.x && y > YARD.y && y < YARD.y + 6;
-        if (inParcels || onRoad || nearHouse || rnd() < 0.3) continue;
+        const nearHouse = x > YARD.x - 5 && x < YARD.x && y > YARD.y && y < YARD.y + 12;
+        const nearPond = ((x - POND.x) / (POND.rx + 2.2)) ** 2 + ((y - POND.z) / (POND.rz + 2)) ** 2 < 1;
+        const nearBales = x > 32 && x < 41 && y > ROAD.y + ROAD.h && y < ROAD.y + ROAD.h + 4;
+        const roadside = y >= ROAD.y + ROAD.h && y < ROAD.y + ROAD.h + 2.2;
+        if (inParcels || onRoad || nearHouse || nearPond || nearBales || roadside || rnd() < 0.3) continue;
         trees.push({ x: x + (rnd() - 0.5) * 0.9, z: y + (rnd() - 0.5) * 0.9, s: 0.75 + rnd() * 0.6, v: rnd() });
       }
     }
     this.scene.add(buildTrees(trees));
+    this.scene.add(blobField(trees.map(t => ({ x: t.x, z: t.z, r: 0.75 * t.s }))));
+
+    this.buildDressing();
 
     const label = (x: number, y: number, h: number, text: string) => {
       const s = tagSprite(text, 1.1, { accent: '#5a503f' });
@@ -462,6 +494,51 @@ export class View3D implements ViewControls {
     };
     label(SILO_POS.x, SILO_POS.y, 5.2, 'Silo');
     label(SELL_UNLOAD.x, ELEVATOR.y + 1, 7.6, 'Sell point');
+  }
+
+  /** Pond, windmill, hay, power line, wild edges, lamp, birds, sky extras and mountains. */
+  private buildDressing() {
+    this.pond = buildPond(POND.x, POND.z, POND.rx, POND.rz);
+    this.scene.add(this.pond.group);
+    const mill = buildWindmill();
+    mill.group.position.set(YARD.x - 3, 0, YARD.y + 9.5);
+    mill.group.rotation.y = 0.6;
+    this.rotor = mill.rotor;
+    const mb = blob(2.2, 2.2);
+    mb.position.set(YARD.x - 3, 0.035, YARD.y + 9.5);
+    const millBase = new THREE.Group();
+    millBase.add(mill.group);
+    mill.group.remove(mill.rotor);
+    mill.group.updateMatrixWorld(true);
+    const rotorHolder = new THREE.Group();
+    rotorHolder.position.copy(mill.group.position);
+    rotorHolder.rotation.copy(mill.group.rotation);
+    rotorHolder.add(mill.rotor);
+    this.scene.add(mergeStatic(millBase), rotorHolder, mb);
+    const by = ROAD.y + ROAD.h + 1.6;
+    this.scene.add(buildBales([
+      { x: 33.5, z: by, a: 0.2, stacked: true }, { x: 34.9, z: by + 0.2, a: 0.1 }, { x: 36.4, z: by - 0.1, a: -0.2 },
+      { x: 38.6, z: by + 0.9, a: 1.2 }, { x: 35.6, z: by + 1.5, a: 0.4 },
+    ]));
+    this.scene.add(mergeStatic(buildPowerLine(2, MAP_W - 2, ROAD.y + ROAD.h + 0.6, 9)));
+    // Wild strip south of the road, and along the west and north edges.
+    const spots: { x: number; z: number }[] = [];
+    for (let i = 0; i < 150; i++) {
+      const x = 1 + Math.random() * (MAP_W - 2), z = ROAD.y + ROAD.h + 1.2 + Math.random() * 3.5;
+      const inPond = ((x - POND.x) / (POND.rx + 1.2)) ** 2 + ((z - POND.z) / (POND.rz + 1)) ** 2 < 1;
+      if (!inPond && !(x > 32 && x < 41)) spots.push({ x, z });
+    }
+    for (let i = 0; i < 70; i++) spots.push({ x: 0.3 + Math.random() * 2.3, z: 3 + Math.random() * 40 });
+    for (let i = 0; i < 90; i++) spots.push({ x: 4 + Math.random() * (MAP_W - 8), z: 0.3 + Math.random() * 2.3 });
+    this.scene.add(buildWildEdges(spots));
+    this.lamp = buildLamp();
+    this.lamp.group.position.set(YARD.x + 0.6, 0, YARD.y + YARD.h - 0.6);
+    this.scene.add(this.lamp.group);
+    this.birds = new Birds(MAP_W / 2, MAP_H / 2);
+    this.stars = buildStars();
+    this.moon = buildMoon();
+    this.mountains = buildMountains(MAP_W / 2, MAP_H / 2);
+    this.scene.add(this.birds.mesh, this.stars, this.moon.group, this.mountains.group);
   }
 
   private buildGrid() {
@@ -766,10 +843,29 @@ export class View3D implements ViewControls {
     this.updateLighting();
     this.updateEnvironment(dt);
     this.crops.tick(this.time);
+    this.updateDressing(dt);
     this.updatePopups(dt);
     this.particles.update(dt);
     this.renderer.render(this.scene, this.camera);
     this.host.frame(dt);
+  }
+
+  private updateDressing(dt: number) {
+    const w = this.sim.weather;
+    // Cloud shadows drift with the wind; stronger on broken-cloud days, faint when overcast.
+    this.cloudDrift.x += dt * 0.0022;
+    this.cloudDrift.y += dt * 0.0009;
+    cloudUniforms.uCloudOff.value.copy(this.cloudDrift);
+    const want = (w === 'sun' ? 0.26 : w === 'cloudy' ? 0.38 : 0.12) * (1 - this.night) * (1 - this.snow * 0.5);
+    cloudUniforms.uCloudAmt.value += (want - cloudUniforms.uCloudAmt.value) * Math.min(1, dt);
+    // Water: ripples slide, and the surface picks up the sky color.
+    this.pond.ripples.offset.x += dt * 0.012;
+    this.pond.ripples.offset.y += dt * 0.006;
+    this.pond.water.color.copy(this.waterBase).lerp(this.sky, 0.45).multiplyScalar(0.55 + 0.45 * (1 - this.night));
+    this.pond.water.emissive.setHex(this.snow > 0.6 ? 0x6c7f8c : 0x0d2a3c).multiplyScalar(1 - this.night * 0.8);
+    this.rotor.rotation.x -= dt * (w === 'storm' ? 6 : w === 'rain' ? 3.5 : 1.8);
+    this.birds.update(this.time, this.night < 0.4 && w !== 'rain' && w !== 'storm' && this.snow < 0.5);
+    this.lamp.set(this.night);
   }
 
   private engineT = 0;
@@ -829,6 +925,18 @@ export class View3D implements ViewControls {
       cam.updateProjectionMatrix();
     }
     this.ground.setSnow(this.snow, day);
+    this.night = 1 - day;
+    (this.stars.material as THREE.PointsMaterial).opacity = Math.max(0, this.night - 0.35) * 1.4 * (1 - this.cloud);
+    const moonDir = new THREE.Vector3(-sunDir.x, Math.max(0.25, -sunDir.y + 0.35), -sunDir.z + 0.3).normalize();
+    this.moon.group.position.copy(this.camera.position).addScaledVector(moonDir, 360);
+    this.moon.glow.opacity = this.night * 0.35 * (1 - this.cloud);
+    this.moon.disc.opacity = this.night * (1 - this.cloud * 0.8);
+    this.mountains.far.color.copy(this.sky).lerp(new THREE.Color(0x6f879c).multiplyScalar(0.35 + 0.65 * day), 0.32 * (1 - this.cloud * 0.5));
+    this.mountains.near.color.copy(this.sky).lerp(new THREE.Color(0x4d6b58).multiplyScalar(0.3 + 0.7 * day), 0.5 * (1 - this.cloud * 0.4));
+    if (this.snow > 0.3) {
+      this.mountains.far.color.lerp(new THREE.Color(0xdfe6ee).multiplyScalar(0.4 + 0.6 * day), this.snow * 0.3);
+      this.mountains.near.color.lerp(new THREE.Color(0xd4dce4).multiplyScalar(0.4 + 0.6 * day), this.snow * 0.35);
+    }
     const st = Math.round(this.snow * 30);
     if (st !== this.snowTint) {
       this.snowTint = st;
@@ -933,6 +1041,7 @@ export class View3D implements ViewControls {
         if (view) { view.root.removeFromParent(); this.pickables.splice(this.pickables.indexOf(view.root), 1); }
         view = buildTool(t.kind, width);
         view.root.userData.toolId = t.id;
+        view.root.add(blob(TOOL_LEN[t.kind] + 0.5, width + 0.5, 0.8));
         this.scene.add(view.root);
         this.pickables.push(view.root);
         this.tViews.set(t.id, view);
@@ -965,7 +1074,11 @@ export class View3D implements ViewControls {
         bubble.visible = false;
         this.scene.add(model.root, bubble);
         this.pickables.push(model.root);
-        view = { model, lx: v.x, ly: v.y, emitT: 0, bubble, pipeAngle: Math.PI * 0.94 };
+        const big = isHarvester(v);
+        const shadow = blob(big ? 3.8 : 2.3, big ? 2.8 : 1.7);
+        const lights = buildHeadlights(big ? 9 : 7, big ? 2.2 : 0.9);
+        model.root.add(shadow, lights);
+        view = { model, lx: v.x, ly: v.y, emitT: 0, bubble, pipeAngle: Math.PI * 0.94, lights };
         this.vViews.set(v.id, view);
       }
       const m = view.model;
@@ -984,6 +1097,7 @@ export class View3D implements ViewControls {
         m.pipe!.rotation.y = view.pipeAngle;
       }
       view.bubble.visible = v.waiting;
+      view.lights.visible = this.night > 0.45 && (v.moving || v.steps.length > 0 || this.sim.drivenId === v.id);
       view.bubble.position.set(v.x, (isHarvester(v) ? 2.8 : 1.9) + Math.sin(this.time * 5) * 0.1, v.y);
       this.emitVehicleFx(v, view, dt);
     }

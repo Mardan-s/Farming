@@ -47,19 +47,26 @@ function noiseTexture() {
 }
 
 /** Large patches of lighter/darker ground plus fine grain, in world space. */
+/** Cloud shadows drifting over the ground, shared by every chunk. */
+export const cloudUniforms = { uCloudOff: { value: new THREE.Vector2() }, uCloudAmt: { value: 0.15 }, uCloudTex: { value: null as THREE.Texture | null } };
+
 function addDetail(mat: THREE.MeshLambertMaterial, noise: THREE.Texture) {
   mat.onBeforeCompile = shader => {
     shader.uniforms.uNoise = { value: noise };
+    shader.uniforms.uCloudOff = cloudUniforms.uCloudOff;
+    shader.uniforms.uCloudAmt = cloudUniforms.uCloudAmt;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec2 vWorldXZ;')
       .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorldXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform sampler2D uNoise;\nvarying vec2 vWorldXZ;')
+      .replace('#include <common>', '#include <common>\nuniform sampler2D uNoise;\nuniform vec2 uCloudOff;\nuniform float uCloudAmt;\nvarying vec2 vWorldXZ;')
       .replace('#include <map_fragment>', `#include <map_fragment>
         float macro = texture2D(uNoise, vWorldXZ * 0.012).r;
         float mid = texture2D(uNoise, vWorldXZ * 0.06 + 0.37).r;
         float fine = texture2D(uNoise, vWorldXZ * 0.9).r;
-        diffuseColor.rgb *= 0.78 + macro * 0.3 + (mid - 0.5) * 0.16 + (fine - 0.5) * 0.12;`);
+        diffuseColor.rgb *= 0.78 + macro * 0.3 + (mid - 0.5) * 0.16 + (fine - 0.5) * 0.12;
+        float cloud = texture2D(uNoise, vWorldXZ * 0.0065 + uCloudOff).r;
+        diffuseColor.rgb *= 1.0 - smoothstep(0.5, 0.68, cloud) * uCloudAmt;`);
   };
 }
 
@@ -77,6 +84,7 @@ export class Ground {
 
   constructor(private tiles: HTMLCanvasElement[], anisotropy: number, detailed: boolean) {
     const detail = detailed ? noiseTexture() : null;
+    cloudUniforms.uCloudTex.value = detail;
     const rows = Math.ceil(MAP_H / CHUNK);
     for (let cy = 0; cy < rows; cy++) {
       for (let cx = 0; cx < this.cols; cx++) {

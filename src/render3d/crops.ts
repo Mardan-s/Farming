@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { cloudUniforms } from './ground';
 import { CROPS, CROP_DEFS, MAP_H, MAP_W } from '../game/config';
 import { CellState, Weeds, type Field } from '../game/field';
 
@@ -161,11 +162,15 @@ function plantMaterial(safe: boolean) {
   if (safe) return m;
   m.onBeforeCompile = shader => {
     shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uCloudTex = cloudUniforms.uCloudTex;
+    shader.uniforms.uCloudOff = cloudUniforms.uCloudOff;
+    shader.uniforms.uCloudAmt = cloudUniforms.uCloudAmt;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float head;
         attribute vec3 headColor;
-        uniform float uTime;`)
+        uniform float uTime;
+        varying vec2 vCloudXZ;`)
       .replace('#include <color_vertex>', `
         vColor = color;
         #ifdef USE_INSTANCING_COLOR
@@ -174,6 +179,7 @@ function plantMaterial(safe: boolean) {
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         {
           vec4 wp = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+          vCloudXZ = wp.xz;
           float h = transformed.y * transformed.y;
           float gust = sin(uTime * 1.3 + wp.x * 0.21 + wp.z * 0.17) * 0.5 + 0.5;
           float sway = sin(uTime * 2.3 + wp.x * 0.9 + wp.z * 0.7) * (0.03 + gust * 0.07);
@@ -182,7 +188,14 @@ function plantMaterial(safe: boolean) {
         }`);
     // Keep leaves lit from both sides.
     shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_begin>',
-      THREE.ShaderChunk.normal_fragment_begin.replace(/normal\s*\*=\s*faceDirection;/g, ''));
+      THREE.ShaderChunk.normal_fragment_begin.replace(/normal\s*\*=\s*faceDirection;/g, ''))
+      .replace('#include <common>', `#include <common>
+        uniform sampler2D uCloudTex;
+        uniform vec2 uCloudOff;
+        uniform float uCloudAmt;
+        varying vec2 vCloudXZ;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        diffuseColor.rgb *= 1.0 - smoothstep(0.5, 0.68, texture2D(uCloudTex, vCloudXZ * 0.0065 + uCloudOff).r) * uCloudAmt;`);
   };
   return m;
 }

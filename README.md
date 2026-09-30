@@ -44,7 +44,9 @@ Controls: drag to pan, pinch or scroll to zoom, twist two fingers (or use ‚ü≤ ‚ü
 - TypeScript + [Three.js](https://threejs.org/) + Vite
 - Every model is built in code (rounded bodies, Lambert shading that works on any phone GPU), and ground textures are drawn on canvases, so there are no asset files
 - Crops, weeds and meadow grass are individual instanced plants with a wind shader, batched per map chunk
-- Physical sky, tone mapping, sun shadows, day/night, rain, snow and lightning; a safe graphics mode turns on by itself if a shader fails
+- Physical sky, tone mapping, sun shadows, drifting cloud shadows, soft contact shadows, distant mountain ridges, day/night with stars, moon, headlight beams and a yard lamp, rain, snow and lightning; a safe graphics mode turns on by itself if a shader fails
+- World dressing: a pond with rippling water, reeds and lily pads, a spinning farm windmill, hay bales, power lines, bushes, rocks, wildflowers and birds
+- Static scenery and machine parts are baked into one mesh per material, keeping draw calls low on phones
 - Low/Medium/High graphics setting (in Settings)
 - The build is a single self-contained `dist/index.html` that runs anywhere, including from a file
 - Progress autosaves to `localStorage`

@@ -41,6 +41,13 @@ html, body {
 }
 
 #game { position: fixed; inset: 0; }
+/* Soft lens vignette and a touch of warmth over the 3D view. */
+#game::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse at 50% 45%, rgba(0, 0, 0, 0) 55%, rgba(20, 14, 4, 0.28) 100%),
+    linear-gradient(180deg, rgba(255, 214, 150, 0.05), rgba(0, 0, 0, 0) 40%, rgba(40, 30, 10, 0.06));
+}
 #game canvas { display: block; touch-action: none; }
 
 #ui { position: fixed; inset: 0; pointer-events: none; z-index: 2; }
