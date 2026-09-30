@@ -67,7 +67,7 @@ function ribbon(points: Pt[], closed: boolean, width: number, y: number) {
 export class View3D implements ViewControls {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(FOV, 1, 0.5, 500);
+  private camera = new THREE.PerspectiveCamera(FOV, 1, 1, 500);
   private target = new THREE.Vector3(17, 0, 51);
   private dist = 30;
   private yaw = 0;
@@ -125,6 +125,7 @@ export class View3D implements ViewControls {
   private rainLevel = 0;
   private wet = 0;
   private flash = 0;
+  private flashEcho = 0;
   private nextBolt = 3;
   private rainAudioT = 0;
   private rain!: THREE.LineSegments;
@@ -170,7 +171,7 @@ export class View3D implements ViewControls {
     this.scene.add(this.grid);
     this.draftCells = new THREE.InstancedMesh(
       new THREE.PlaneGeometry(0.94, 0.94).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0x7dff7a, transparent: true, opacity: 0.35, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0x7dff7a, transparent: true, opacity: 0.35, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }),
       4000,
     );
     this.draftCells.count = 0;
@@ -180,7 +181,7 @@ export class View3D implements ViewControls {
 
     this.ring = new THREE.Mesh(
       new THREE.RingGeometry(0.85, 1.02, 48).rotateX(-Math.PI / 2),
-      new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.95, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0xffe066, transparent: true, opacity: 0.95, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }),
     );
     this.ring.renderOrder = 4;
     this.ring.visible = false;
@@ -482,13 +483,13 @@ export class View3D implements ViewControls {
 
   redrawParcels() {
     this.clearGroup(this.parcelGroup);
-    const shade = new THREE.MeshBasicMaterial({ color: 0x0b1608, transparent: true, opacity: 0.32, depthWrite: false });
-    const border = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false });
+    const shade = new THREE.MeshBasicMaterial({ color: 0x0b1608, transparent: true, opacity: 0.32, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+    const border = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
     for (let i = 0; i < PARCEL_COUNT; i++) {
       const r = parcelRect(i);
       const pts = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
       if (this.sim.owned.has(i)) {
-        const b = new THREE.Mesh(ribbon(pts, true, 0.08, 0.025), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, depthWrite: false }));
+        const b = new THREE.Mesh(ribbon(pts, true, 0.08, 0.025), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
         this.parcelGroup.add(b);
         continue;
       }
@@ -507,7 +508,7 @@ export class View3D implements ViewControls {
     const sel = this.host.selectedField;
     for (const f of this.sim.world.fields.values()) {
       const selected = f.id === sel;
-      const mat = new THREE.MeshBasicMaterial({ color: selected ? 0xffe066 : 0xffffff, transparent: true, opacity: selected ? 1 : 0.55, depthWrite: false });
+      const mat = new THREE.MeshBasicMaterial({ color: selected ? 0xffe066 : 0xffffff, transparent: true, opacity: selected ? 1 : 0.55, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
       const line = new THREE.Mesh(ribbon(f.poly, true, selected ? 0.22 : 0.12, 0.04), mat);
       line.renderOrder = 3;
       this.fieldGroup.add(line);
@@ -545,12 +546,12 @@ export class View3D implements ViewControls {
     this.draftCells.instanceMatrix.needsUpdate = true;
     if (!on) return;
     if (pts.length > 1) {
-      const mat = new THREE.MeshBasicMaterial({ color: valid ? 0xffffff : 0xffb3b3, depthWrite: false });
+      const mat = new THREE.MeshBasicMaterial({ color: valid ? 0xffffff : 0xffb3b3, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
       const line = new THREE.Mesh(ribbon(pts, false, 0.14, 0.07), mat);
       line.renderOrder = 4;
       this.draftGroup.add(line);
       if (pts.length >= 4) {
-        const close = new THREE.Mesh(ribbon([pts[pts.length - 1], pts[0]], false, 0.08, 0.07), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false }));
+        const close = new THREE.Mesh(ribbon([pts[pts.length - 1], pts[0]], false, 0.08, 0.07), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false , polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
         this.draftGroup.add(close);
       }
     }
@@ -788,7 +789,7 @@ export class View3D implements ViewControls {
     const dusk = Math.max(0, 1 - Math.abs(day - 0.45) / 0.45) * (h > 12 ? 1 : 0.6);
     this.sky.copy(this.skyNight).lerp(this.skyDay, day).lerp(this.skyDusk, dusk * 0.45 * (1 - this.cloud));
     this.sky.lerp(this.skyGrey.clone().multiplyScalar(0.25 + 0.75 * day), this.cloud * 0.75);
-    if (this.flash > 0) this.sky.lerp(new THREE.Color(0xdfe6ff), this.flash * 0.6);
+    if (this.flash > 0) this.sky.lerp(new THREE.Color(0xdfe6ff), this.flash * 0.3);
     this.scene.background = this.sky;
     (this.scene.fog as THREE.Fog).color.copy(this.sky);
 
@@ -816,7 +817,7 @@ export class View3D implements ViewControls {
       : new THREE.Vector3(0.4, 0.8, -0.3).normalize();
     this.sun.intensity = (0.7 + day * 2.55) * (1 - 0.7 * this.cloud);
     this.sun.color.setHex(0x9fb2ff).lerp(new THREE.Color(0xfff0d8), day).lerp(new THREE.Color(0xffa860), dusk * 0.55);
-    this.hemi.intensity = (0.55 + day * 0.55) * (1 - 0.15 * this.cloud) + this.flash * 2.5;
+    this.hemi.intensity = (0.55 + day * 0.55) * (1 - 0.15 * this.cloud) + this.flash * 0.7;
     this.scene.environmentIntensity = (0.2 + day * 0.25) * (1 - 0.3 * this.cloud);
     this.sun.position.copy(this.target).addScaledVector(lightDir, 60);
     this.sun.target.position.copy(this.target);
@@ -904,11 +905,16 @@ export class View3D implements ViewControls {
     this.nextBolt -= dt;
     if (w === 'storm' && !flakes && this.nextBolt <= 0) {
       this.flash = 1;
+      this.flashEcho = Math.random() < 0.5 ? 0.18 : 0;
       this.nextBolt = 5 + Math.random() * 9;
       setTimeout(() => sfx.thunder(), 500 + Math.random() * 1200);
     }
-    this.flash = Math.max(0, this.flash - dt * 3.5);
-    if (this.flash > 0.3 && this.flash < 0.5) this.flash = 0.2 + Math.random() * 0.6; // flicker
+    // A soft flash that fades out, with at most one short after-flash (no strobing).
+    this.flash = Math.max(0, this.flash - dt * 3);
+    if (this.flashEcho > 0) {
+      this.flashEcho -= dt;
+      if (this.flashEcho <= 0) this.flash = Math.max(this.flash, 0.5);
+    }
     this.rainAudioT += dt;
     if (this.rainAudioT > 0.5) { this.rainAudioT = 0; setRain(flakes ? 0 : this.rainLevel); }
   }

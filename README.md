@@ -5,7 +5,7 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 ## How to play
 
 1. **Draw a field.** Tap **Draw field**, then tap at least 4 grid corners on land you own. Tap the first corner again, or press **Create**.
-2. **Tap the field.** It shows a short to-do list of what it needs right now, like Plow, Plant, Weeds or Harvest, with the most important job first. Tap a job and the best free machine goes, fetching the right implement from the farmyard. If you're missing a machine, the card offers to buy it. **More** lists the other jobs, and **Choose machine** lets you pick one yourself.
+2. **Tap the field.** It shows a short to-do list of what it needs right now, like Plow, Plant, Weeds or Harvest, with the most important job first. Each job has two buttons: **Hire** (shows the wage) sends the best free machine with a worker, who fetches the right implement from the farmyard. **Drive** has a worker bring the machine and tool to the corner of the field for free and line it up on the first row with the tool down, then hands you the wheel. If you're missing a machine, the card offers to buy it. **More** lists the other jobs, and **Choose machine** lets you pick one yourself.
 3. **Plant.** Pick a crop from the swipeable crop picker: **wheat, barley, oats, corn, soybeans, canola, sunflowers, potatoes** or **sugar beets**. Each has its own grow time, yield and price.
 4. **Grow.** Crops grow as real plants that sway in the wind. They keep growing while the game is closed, but slower.
 5. **Harvest.** When the field turns golden, tap it and choose **Harvest**.

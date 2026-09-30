@@ -35,6 +35,7 @@ const ha = (cells: number) => `${(cells * 0.01).toFixed(2)} ha`;
 const vIco = (v: Vehicle) => icon(VEHICLE_ICON[v.kind]);
 const cap1 = (t: string) => t[0].toUpperCase() + t.slice(1);
 const pad2 = (n: number) => String(n).padStart(2, '0');
+const roundTo = (n: number, step: number) => Math.round(n / step) * step;
 
 const TOAST_ICON: Record<string, string> = { good: 'check', bad: 'warn', info: 'flag', goal: 'flag' };
 
@@ -62,6 +63,9 @@ export class UI implements ViewHost {
   private view!: ViewControls;
   private pending: { msg: string; yes: string; run: () => void } | null = null;
   private driveKey = '';
+  private panelKey = '';
+  private modalKey = '';
+  private plantBy: 'hire' | 'drive' = 'hire';
   private stick = { id: -1, cx: 0, cy: 0, steer: 0, throttle: 0 };
   private marketCrop: CropId | null = null;
   private keys = new Set<string>();
@@ -79,6 +83,11 @@ export class UI implements ViewHost {
     sim.events.on('money', (_x: number, _y: number, amt: number) => { if (amt > 0) sfx.cash(); });
     sim.events.on('drive', () => this.syncDriving());
     sim.events.on('bump', () => sfx.bump());
+    sim.events.on('handover', (_vid: number, fid: number, op: Op, err: string | null) => {
+      sfx.select();
+      const what = op === 'seed' ? `plant ${CROP_DEFS[sim.driveCrop].name.toLowerCase()}` : OP_DEFS[op].name.toLowerCase();
+      this.toast(err ? `You're at Field ${fid}. ${err}` : `Your turn: push the stick up to ${what} Field ${fid}. The tool is already down.`, err ? 'bad' : 'info', 'wheel');
+    });
     sim.events.on('season', (season: string) => {
       const msg: Record<string, string> = {
         spring: 'Spring is here. Plant wheat, barley, oats, corn, soybeans, sunflowers, potatoes or beets.',
@@ -392,7 +401,15 @@ export class UI implements ViewHost {
       }
       case 'plant': {
         const p = this.panel;
-        if (p.kind === 'field') this.startJob(p.fid, 'seed', arg as CropId, p.vid);
+        if (p.kind !== 'field') return;
+        if (this.plantBy === 'drive') this.startDriveJob(p.fid, 'seed', arg as CropId, p.vid);
+        else this.startJob(p.fid, 'seed', arg as CropId, p.vid);
+        return;
+      }
+      case 'plantBy': this.plantBy = arg as 'hire' | 'drive'; sfx.tap(); break;
+      case 'driveJob': {
+        const p = this.panel;
+        if (p.kind === 'field') this.startDriveJob(p.fid, arg as Op, undefined, p.vid);
         return;
       }
       case 'fieldView': {
@@ -594,6 +611,24 @@ export class UI implements ViewHost {
     this.setPanel({ kind: 'field', fid, view: 'todo' });
   }
 
+  /** A worker brings the machine and tool to the field for free, then hands you the wheel. */
+  private startDriveJob(fid: number, op: Op, crop: CropId | undefined, vid?: number) {
+    const sim = this.sim;
+    const f = sim.world.fields.get(fid);
+    if (!f) return;
+    const pick = vid != null ? { vehicle: sim.vehicle(vid) } : sim.bestVehicleFor(f, op, crop);
+    if (!pick.vehicle) { sfx.error(); this.toast(pick.reason ?? 'No machine available.', 'bad'); return; }
+    const err = sim.orderDriveJob(pick.vehicle.id, fid, op, crop);
+    if (err) { sfx.error(); this.toast(err, 'bad'); return; }
+    sfx.confirm();
+    const at = Math.hypot(pick.vehicle.x - f.center.x, pick.vehicle.y - f.center.y) > 12;
+    this.toast(at ? `${pick.vehicle.name} is on its way to Field ${fid}. You take the wheel when it gets there.` : `Your turn: push the stick up.`, 'info', 'wheel');
+    this.clearSelection();
+    this.selectedVehicle = pick.vehicle.id;
+    this.follow = true;
+    this.setPanel({ kind: 'vehicle', id: pick.vehicle.id });
+  }
+
   // ---------- field drawing ----------
 
   private addCorner(cx: number, cy: number) {
@@ -641,20 +676,39 @@ export class UI implements ViewHost {
   private render(force = false) {
     const panelHtml = this.sim.drivenId != null ? '' : this.renderPanel();
     if (force || panelHtml !== this.panelHtml) {
-      if (panelHtml !== this.panelHtml) $('#panel').innerHTML = panelHtml;
+      if (panelHtml !== this.panelHtml) {
+        // Only slide a sheet in when a different one opens; live refreshes swap it in place.
+        const p = this.panel;
+        const key = `${p.kind}:${'id' in p ? p.id : ''}:${'fid' in p ? p.fid : ''}:${'view' in p ? p.view : ''}`;
+        this.swap($('#panel'), panelHtml, key === this.panelKey);
+        this.panelKey = key;
+      }
       this.panelHtml = panelHtml;
     }
     const modalHtml = this.modal ? this.renderModal() : '';
     if (modalHtml !== this.modalHtml) {
       const m = $('#modal');
-      m.innerHTML = modalHtml;
+      const key = `${this.modal}:${this.shopTab}:${this.marketCrop ?? ''}`;
+      this.swap(m, modalHtml, key === this.modalKey && !m.classList.contains('hidden'));
       m.classList.toggle('hidden', !this.modal);
       this.modalHtml = modalHtml;
+      this.modalKey = key;
     }
     const goalHtml = this.renderGoal();
     if (goalHtml !== this.goalHtml) { $('#goal').innerHTML = goalHtml; this.goalHtml = goalHtml; }
     $('#goal').classList.toggle('open', this.goalOpen);
     this.updateLive();
+  }
+
+  /** Replaces a container's HTML, keeping scroll positions and skipping the entry animation on refreshes. */
+  private swap(box: HTMLElement, html: string, refresh: boolean) {
+    const scroll = refresh ? [...box.querySelectorAll<HTMLElement>('.sheet, .card, .packets')].map(el => [el.scrollTop, el.scrollLeft]) : [];
+    box.innerHTML = html;
+    if (!refresh) return;
+    box.querySelectorAll<HTMLElement>('.sheet, .card').forEach(el => el.classList.add('still'));
+    box.querySelectorAll<HTMLElement>('.sheet, .card, .packets').forEach((el, i) => {
+      if (scroll[i]) { el.scrollTop = scroll[i][0]; el.scrollLeft = scroll[i][1]; }
+    });
   }
 
   private updateLive() {
@@ -870,34 +924,32 @@ export class UI implements ViewHost {
     const sim = this.sim;
     const d = OP_DEFS[n.op];
     const title = n.op === 'seed' ? 'Plant a crop' : d.name;
-    let side = '';
-    let who = '';
-    let action = `data-act="need" data-arg="${n.op}"`;
-    if (n.op === 'seed') {
-      who = 'Choose a crop';
-    } else {
-      const v = vid != null ? sim.vehicle(vid) : undefined;
-      const check = v ? sim.checkFieldOp(v, f, n.op) : undefined;
-      const pick = v ? (check!.ok ? { vehicle: v } : { reason: check!.reason }) : sim.bestVehicleFor(f, n.op);
-      if (d.costPerCell) side = `<span class="fig">${money(sim.eligibleCount(f, n.op) * d.costPerCell)}</span>`;
-      if (pick.vehicle) {
-        const est = sim.estimateJob(pick.vehicle, f, n.op);
-        who = `${pick.vehicle.name} will go · about ${money(est.wage)} in wages`;
-      } else if ('buy' in pick && pick.buy) {
-        const item = SHOP_ITEMS.find(i => i.id === pick.buy)!;
-        action = `data-act="buyFor" data-arg="${item.id}"`;
-        who = `<span class="warn">Buy a ${item.name.toLowerCase()} first</span>`;
-        side = `<span class="fig">${money(item.cost)}</span>`;
-      } else {
-        action = 'disabled';
-        who = `<span class="warn">${pick.reason}</span>`;
-      }
-    }
-    return `<button class="lrow ${next ? 'next' : ''}" ${action}>
-      <span class="lr-ico">${icon(OP_ICON[n.op])}</span>
+    const head = (side: string, who: string) => `<span class="lr-ico">${icon(OP_ICON[n.op])}</span>
       <span class="lr-main"><span class="lr-line"><b>${title}</b><i></i>${side}</span>
-        <small>${n.why}</small><small class="who">${who}</small></span>
-      ${next ? '<span class="stamp-mini">Next</span>' : icon('chevron', 'go')}</button>`;
+        <small>${n.why}</small>${who}</span>
+      ${next ? '<span class="stamp-mini">Next</span>' : ''}`;
+    if (n.op === 'seed') {
+      return `<button class="lrow ${next ? 'next' : ''}" data-act="need" data-arg="seed">${head('', '<small class="who">Choose a crop</small>')}</button>`;
+    }
+    const v = vid != null ? sim.vehicle(vid) : undefined;
+    const check = v ? sim.checkFieldOp(v, f, n.op) : undefined;
+    const pick = v ? (check!.ok ? { vehicle: v } : { reason: check!.reason }) : sim.bestVehicleFor(f, n.op);
+    const supplies = d.costPerCell ? `<span class="fig">${money(roundTo(sim.eligibleCount(f, n.op) * d.costPerCell, 10))}</span>` : '';
+    if (pick.vehicle) {
+      const est = sim.estimateJob(pick.vehicle, f, n.op);
+      return `<div class="lrow job ${next ? 'next' : ''}">
+        ${head(supplies, `<small class="who">${pick.vehicle.name}</small>`)}
+        <span class="job-btns">
+          <button class="primary" data-act="need" data-arg="${n.op}">${icon('fleet')}<span>Hire <span class="fig">${money(roundTo(est.wage, 10))}</span></span></button>
+          <button data-act="driveJob" data-arg="${n.op}">${icon('wheel')}<span>Drive</span></button>
+        </span></div>`;
+    }
+    if ('buy' in pick && pick.buy) {
+      const item = SHOP_ITEMS.find(i => i.id === pick.buy)!;
+      return `<button class="lrow ${next ? 'next' : ''}" data-act="buyFor" data-arg="${item.id}">
+        ${head(`<span class="fig">${money(item.cost)}</span>`, `<small class="who"><span class="warn">Buy a ${item.name.toLowerCase()} first</span></small>`)}</button>`;
+    }
+    return `<div class="lrow ${next ? 'next' : ''}">${head(supplies, `<small class="who"><span class="warn">${pick.reason}</span></small>`)}</div>`;
   }
 
   private renderField(p: Extract<Panel, { kind: 'field' }>): string {
@@ -931,7 +983,8 @@ export class UI implements ViewHost {
           <span class="pk-row"><span>Plant</span><span class="fig">${d.seasons.map(x => SEASON_NAMES[x].slice(0, 3)).join('/')}</span></span>
           ${!season ? `<small class="warn">Not in ${sim.seasonName.toLowerCase()}</small>` : noPlanter ? '<small class="warn">Needs root planter</small>' : ''}</button>`;
       }).join('');
-      return `<section class="sheet">${head}<p class="note">Pick a crop for ${sim.seasonName.toLowerCase()}. Prices are per 1,000 L.</p><div class="packets">${crops}</div></section>`;
+      const by = `<div class="tabs"><button data-act="plantBy" data-arg="hire" class="${this.plantBy === 'hire' ? 'on' : ''}">Hire a worker</button><button data-act="plantBy" data-arg="drive" class="${this.plantBy === 'drive' ? 'on' : ''}">Drive myself</button></div>`;
+      return `<section class="sheet">${head}${by}<p class="note">Pick a crop for ${sim.seasonName.toLowerCase()}. Prices are per 1,000 L.</p><div class="packets">${crops}</div></section>`;
     }
     if (p.view === 'machines') {
       const list = sim.vehicles.map(m => `<button class="lrow" data-act="pickMachine" data-arg="${m.id}">

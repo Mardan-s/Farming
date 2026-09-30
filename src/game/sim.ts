@@ -34,7 +34,8 @@ export type Step =
   | { t: 'work'; op: Op; fieldId: number; crop?: CropId; level?: number; path?: Waypoint[]; idx?: number; rounds?: number; abort?: boolean }
   | { t: 'follow'; combineId: number }
   | { t: 'unload'; dest: Dest; earned?: number }
-  | { t: 'refuel' };
+  | { t: 'refuel' }
+  | { t: 'handover'; fieldId: number; op: Op; crop?: CropId; heading: number };
 
 export type Expense = 'fuel' | 'wages' | 'repairs' | 'interest' | 'supplies';
 export type Ledger = Record<Expense | 'sales', number>;
@@ -366,7 +367,8 @@ export class Game {
     const before = v.condition;
     v.condition = Math.max(0, v.condition - wear * dt);
     if (before >= 30 && v.condition < 30) this.events.emit('toast', `🔧 ${v.name} is worn out and slowing down — repair it`, 'bad');
-    if (!driven && !v.waiting) this.spend('wages', WAGE_PER_SEC * dt);
+    const forYou = v.steps.some(st => st.t === 'handover');
+    if (!driven && !v.waiting && !forYou) this.spend('wages', WAGE_PER_SEC * dt);
   }
 
   spend(kind: Expense, amount: number) {
@@ -526,6 +528,7 @@ export class Game {
       case 'follow': this.stepFollow(v, step, dt); break;
       case 'unload': this.stepUnload(v, step, dt); break;
       case 'refuel': this.stepRefuel(v, dt); break;
+      case 'handover': this.stepHandover(v, step, dt); break;
     }
   }
 
@@ -539,6 +542,30 @@ export class Game {
       v.fuel = cap;
       v.steps.shift();
     }
+  }
+
+  /** Lines the machine up with the first row, then puts you in the seat with the tool lowered. */
+  private stepHandover(v: Vehicle, s: Extract<Step, { t: 'handover' }>, dt: number) {
+    const field = this.world.fields.get(s.fieldId);
+    if (!field) { v.steps.shift(); return; }
+    if (this.drivenId != null) { v.status = `Waiting for you at Field ${field.id}`; v.waiting = true; return; }
+    v.heading = angleLerp(v.heading, s.heading, Math.min(1, dt * 6));
+    v.status = `Ready for you at Field ${field.id}`;
+    if (Math.abs(Math.atan2(Math.sin(s.heading - v.heading), Math.cos(s.heading - v.heading))) > 0.05) return;
+    v.heading = s.heading;
+    const tool = this.toolOf(v);
+    if (tool) {
+      // Straighten the implement behind the tractor.
+      const d = HITCH_OFFSET + TOOL_LEN[tool.kind] / 2;
+      tool.heading = v.heading;
+      tool.x = v.x - Math.cos(v.heading) * d;
+      tool.y = v.y - Math.sin(v.heading) * d;
+    }
+    this.startDriving(v.id);
+    if (s.op === 'seed' && s.crop) this.driveCrop = s.crop;
+    if (s.op === 'fertilize' || s.op === 'lime') this.driveSpread = s.op;
+    const err = this.toggleImplement();
+    this.events.emit('handover', v.id, s.fieldId, s.op, err);
   }
 
   /** Steps to top up at the pump first when the tank is getting low. */
@@ -1011,6 +1038,41 @@ export class Game {
     return null;
   }
 
+  /** Like a hired job, but the worker only brings the machine and tool to the field (free), then you drive. */
+  orderDriveJob(vid: number, fieldId: number, op: Op, crop?: CropId): string | null {
+    const v = this.vehicle(vid);
+    const field = this.world.fields.get(fieldId);
+    if (!v || !field) return 'Not available';
+    if (op === 'seed' && !crop) return 'Pick a crop';
+    const check = this.checkFieldOp(v, field, op, crop);
+    if (!check.ok) return check.reason ?? 'Not possible';
+    if (op === 'harvest' && this.tooWet) return 'The crop is too wet to harvest right now';
+    this.cancel(v);
+    const kind = v.kind === 'tractor' ? toolForOp(op, crop) : undefined;
+    const pre: Step[] = [];
+    if (kind) {
+      const tools = this.ensureTool(v, kind, true);
+      if (typeof tools === 'string') return tools;
+      pre.push(...tools);
+    }
+    // Plan the job as if a worker were doing it, to find the start of the first row.
+    const plan = this.buildPath(v, { t: 'work', op, fieldId, crop: check.crop, level: op === 'fertilize' ? 2 : undefined }, field);
+    const a = plan[0] ?? field.center, b = plan[1] ?? field.center;
+    const heading = Math.atan2(b.y - a.y, b.x - a.x);
+    // Stop a machine-length back so the tool starts at the edge.
+    const back = v.kind === 'tractor' ? 1.2 : 0.5;
+    const dx = Math.cos(heading), dy = Math.sin(heading);
+    const reach = isHarvester(v) ? 1.3 : 0.85;
+    const start = { x: a.x - dx * back, y: a.y - dy * back };
+    // Never hand over parked in a fence or hedge: roll forward until the spot and the bumper are clear.
+    for (let i = 0; i < 20 && (blockedAt(start.x, start.y) || blockedAt(start.x + dx * reach, start.y + dy * reach)); i++) {
+      start.x += dx * 0.25;
+      start.y += dy * 0.25;
+    }
+    v.steps = [...this.fuelSteps(v), ...pre, { t: 'goto', x: start.x, y: start.y }, { t: 'handover', fieldId, op, crop: check.crop, heading }];
+    return null;
+  }
+
   /** What a field needs right now, most important first. Only jobs that are possible now. */
   fieldNeeds(f: Field): Need[] {
     const s = f.summary(this.growth);
@@ -1325,7 +1387,10 @@ export class Game {
     const reach = (isHarvester(v) ? 1.3 : 0.85) * Math.sign(v.speed);
     const fx = nx + Math.cos(v.heading) * reach, fy = ny + Math.sin(v.heading) * reach;
     const px = -Math.sin(v.heading) * 0.4, py = Math.cos(v.heading) * 0.4;
-    if (blockedAt(fx, fy) || blockedAt(fx + px, fy + py) || blockedAt(fx - px, fy - py)) {
+    const hit = (x: number, y: number) => blockedAt(x + px, y + py) || blockedAt(x - px, y - py) || blockedAt(x, y);
+    // A machine already touching an obstacle may always move away from it.
+    const stuck = hit(v.x + Math.cos(v.heading) * reach, v.y + Math.sin(v.heading) * reach);
+    if (!stuck && hit(fx, fy)) {
       if (Math.abs(v.speed) > 1.5) this.events.emit('bump', v.id);
       v.speed = 0;
     } else {

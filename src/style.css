@@ -565,3 +565,12 @@ body.driving #toasts { top: calc(150px + var(--safe-top)); }
   .dr-actions { bottom: calc(14px + var(--safe-bottom)); }
   .dr-actions button { min-height: 42px; }
 }
+
+/* Live refreshes swap a sheet in place without replaying its entry animation. */
+.sheet.still, .card.still { animation: none; }
+/* Field jobs: Hire or Drive. */
+.lrow.job { flex-wrap: wrap; align-items: flex-start; }
+.lrow.job .lr-main { flex: 1 1 60%; }
+.job-btns { display: flex; gap: 6px; flex: 1 0 100%; padding-left: 40px; margin-top: 2px; }
+.job-btns button { flex: 1; min-height: 40px; font-size: 13.5px; padding: 6px 10px; }
+.job-btns .ico { width: 17px; height: 17px; }

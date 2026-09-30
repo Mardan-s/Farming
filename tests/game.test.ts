@@ -393,6 +393,21 @@ describe('driving yourself', () => {
     expect(combine.tank.crop).toBe('wheat');
   });
 
+  it('Drive: a worker brings the tractor and plow to the field, then hands over', () => {
+    const game = new Game();
+    game.createField(SQUARE);
+    const f = [...game.world.fields.values()][0];
+    const tractor = game.vehicles[0];
+    expect(game.orderDriveJob(tractor.id, f.id, 'plow')).toBeNull();
+    expect(run(game, 300, () => game.drivenId === tractor.id)).toBe(true);
+    expect(game.toolOf(tractor)?.kind).toBe('plow');
+    expect(game.implDown).toBe(true);
+    expect(game.ledger.today.wages).toBe(0);
+    game.setDriveInput(0, 1);
+    run(game, 5);
+    expect(game.eligibleCount(f, 'plow')).toBeLessThan(f.cells.length);
+  });
+
   it('bumps into the silo instead of driving through it', () => {
     const game = new Game();
     const t = game.vehicles[0];
