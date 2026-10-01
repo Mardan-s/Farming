@@ -94,6 +94,10 @@ export interface VehicleModel {
   steer?: THREE.Group[];
   /** -1 when the steering wheels are at the back. */
   steerSign?: number;
+  /** Amber beacon that flashes while working. */
+  beacon?: THREE.MeshLambertMaterial;
+  /** Grain heap in a combine's tank. */
+  grain?: THREE.Mesh;
 }
 
 export interface ToolModel {
@@ -102,6 +106,10 @@ export interface ToolModel {
   width: number;
   fill?: THREE.Mesh;
   wheels: THREE.Group[];
+  /** Wagon box that tips up to unload, hinged at the back. */
+  tip?: THREE.Group;
+  /** Parts that spin while working (spreader discs). */
+  spin?: THREE.Group[];
 }
 
 // ---------- scenery ----------

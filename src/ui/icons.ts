@@ -51,6 +51,7 @@ const P: Record<string, string> = {
   upgrade: '<path d="M12 20V6M6.5 11.5 12 6l5.5 5.5M5 3.5h14"/>',
   map: '<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>',
   undo: '<path d="M9 7 4 12l5 5"/><path d="M4 12h10a6 6 0 0 1 0 12"/>',
+  rotate: '<rect x="3" y="8" width="18" height="10" rx="2"/><path d="M7 4.5A8 8 0 0 1 17 4.5M17 4.5V1.8M17 4.5h-2.7"/><path d="M7 13h1"/>',
   wheel: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.2"/><path d="M3.5 10.5 9.8 12M14.2 12l6.3-1.5M12 14.2V21"/>',
   fuel: '<path d="M5 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16M3.5 21h13M7.5 7.5h5"/><path d="M15 9h2l2 2.5V17a1.5 1.5 0 0 1-3 0v-3h-1"/>',
   wrench: '<path d="M14.5 6.5a4 4 0 0 0 5 5L12 19a2.1 2.1 0 0 1-3-3l7.5-7.5a4 4 0 0 1-2-2z"/><path d="M14.5 6.5 17 4l3 3-2.5 2.5"/>',

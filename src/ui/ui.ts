@@ -149,9 +149,15 @@ export class UI implements ViewHost {
       <div id="panel"></div>
       <div id="modal" class="hidden"></div>`;
     const root = document.getElementById('ui')!;
+    root.addEventListener('pointerdown', e => { this.downEl = e.target as Node; }, true);
+    window.addEventListener('pointerdown', e => { if (!root.contains(e.target as Node)) this.downEl = null; }, true);
     root.addEventListener('click', e => {
       const el = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
       if (!el || el.hasAttribute('disabled')) return;
+      // A tap on the map can open a sheet right under the finger; the browser's follow-up click
+      // must not press whatever button just appeared there. Only presses that started on the
+      // button count (keyboard clicks have no pointer and are fine).
+      if (e.detail !== 0 && !(this.downEl && el.contains(this.downEl))) return;
       this.act(el.dataset.act!, el.dataset.arg ?? '');
     });
     this.live.set('money', () => (this.sim.money < 0 ? '-' : '') + money(Math.abs(this.sim.money)).slice(1));
@@ -168,6 +174,8 @@ export class UI implements ViewHost {
   }
 
   // ---------- ViewHost ----------
+
+  private downEl: Node | null = null;
 
   onTap(info: TapInfo) {
     if (this.modal || this.sim.drivenId != null) return;
@@ -198,6 +206,7 @@ export class UI implements ViewHost {
       this.selectedVehicle = null;
       this.selectedField = info.fieldId;
       this.setPanel({ kind: 'field', fid: info.fieldId, view: 'todo' });
+      this.focusField(info.fieldId);
       return;
     }
     if (info.parcel >= 0 && !this.sim.owned.has(info.parcel)) {
@@ -208,6 +217,11 @@ export class UI implements ViewHost {
     }
     this.clearSelection();
     this.setPanel({ kind: 'home' });
+  }
+
+  private focusField(fid: number) {
+    const f = this.sim.world.fields.get(fid);
+    if (f && this.sideSheet) this.view.panTo(f.center.x, f.center.y);
   }
 
   frame(dt: number) {
@@ -573,6 +587,12 @@ export class UI implements ViewHost {
         this.onSave();
         location.reload();
         return;
+      case 'landscape': {
+        this.modal = null;
+        this.render(true);
+        void this.goLandscape();
+        return;
+      }
       case 'mute': sim.muted = !sim.muted; setMuted(sim.muted); sfx.tap(); break;
       case 'save': this.onSave(); this.toast('Game saved.', 'info'); break;
       case 'reset':
@@ -588,6 +608,29 @@ export class UI implements ViewHost {
       }
     }
     this.render(true);
+  }
+
+  /** Full screen and locked sideways where the browser allows it; otherwise, a hint to rotate. */
+  private async goLandscape() {
+    sfx.tap();
+    const el = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
+    try {
+      if (!document.fullscreenElement) {
+        if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: 'hide' });
+        else await el.webkitRequestFullscreen?.();
+      }
+      const o = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+      if (o?.lock) await o.lock('landscape');
+      else throw new Error('no lock');
+    } catch {
+      if (window.innerWidth < window.innerHeight) this.toast('Turn your phone sideways (switch on auto-rotate). The game is laid out for landscape too.', 'info', 'rotate');
+    }
+  }
+
+  /** Landscape phones show sheets in a side panel; the 3D view keeps what you tapped beside it. */
+  get sideSheet() {
+    const land = window.innerWidth > window.innerHeight && window.innerHeight <= 600;
+    return land && this.sim.drivenId == null && this.panel.kind !== 'home' && this.panel.kind !== 'draw';
   }
 
   private ask(msg: string, yes: string, run: () => void) {
@@ -1062,7 +1105,10 @@ export class UI implements ViewHost {
             <li>Or tap a machine and <b>Drive</b> it yourself: hired workers cost wages, you don't.</li>
           </ol>
           <p class="note">Each crop has planting seasons and nothing grows in winter. Rain stops the combines, and storms flatten ripe crops left standing. Machines burn fuel (the pump is by the silo) and wear out.</p>
-          <button class="primary wide" data-act="closeModal">Start farming</button>
+          <div class="btnrow">
+            <button class="primary" data-act="closeModal">Start farming</button>
+            <button data-act="landscape">${icon('rotate')}Play in landscape</button>
+          </div>
         </div>`;
       case 'fleet':
         return `<div class="card">
@@ -1157,6 +1203,7 @@ export class UI implements ViewHost {
           ${isSafeMode() ? `<div class="ledger"><button class="lrow" data-act="fullGraphics"><span class="lr-ico">${icon('warn')}</span><span class="lr-main"><span class="lr-line"><b>Simple graphics are on</b><i></i></span><small>Your phone couldn\u2019t run the full effects. Tap to try them again.</small></span></button></div>` : ''}
           <div class="tabs">${(['low', 'medium', 'high'] as Quality[]).map(q => `<button data-act="quality" data-arg="${q}" class="${getQuality() === q ? 'on' : ''}">${cap1(q)}</button>`).join('')}</div>
           <div class="ledger">
+            <button class="lrow" data-act="landscape"><span class="lr-ico">${icon('rotate')}</span><span class="lr-main"><span class="lr-line"><b>Play in landscape</b><i></i></span><small>Full screen, turned sideways. Menus open at the side.</small></span></button>
             <button class="lrow" data-act="save"><span class="lr-ico">${icon('save')}</span><span class="lr-main"><span class="lr-line"><b>Save now</b><i></i></span><small>The game also saves by itself.</small></span></button>
             <button class="lrow" data-act="modal" data-arg="welcome"><span class="lr-ico">${icon('help')}</span><span class="lr-main"><span class="lr-line"><b>How to play</b><i></i></span></span></button>
             <button class="lrow danger" data-act="reset"><span class="lr-ico">${icon('trash')}</span><span class="lr-main"><span class="lr-line"><b>New farm</b><i></i></span><small>Erase progress and start over.</small></span></button>

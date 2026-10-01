@@ -202,7 +202,8 @@ function cab(p: THREE.Object3D, x: number, y: number, w: number, h: number, d: n
   bx(p, 0.06, 0.03, d + 0.1, 0x1e1e1e, x + w / 2 + 0.07, y + h + 0.02, 0);
   for (const z of [-0.36, -0.14, 0.14, 0.36]) bx(p, 0.03, 0.035, 0.07, lights, x + w / 2 + 0.07, y + h + 0.06, z * d, 0, 0, 0);
   for (const z of [-0.3, 0.3]) bx(p, 0.03, 0.035, 0.07, lights, x - w / 2 - 0.07, y + h + 0.06, z * d);
-  put(p, new THREE.CylinderGeometry(0.03, 0.036, 0.06, 10), AMBER(), x - w * 0.3, y + h + 0.11, d * 0.32, 0, 0, 0, false);
+  const beacon = AMBER();
+  put(p, new THREE.CylinderGeometry(0.03, 0.036, 0.06, 10), beacon, x - w * 0.3, y + h + 0.11, d * 0.32, 0, 0, 0, false);
   put(p, new THREE.CylinderGeometry(0.004, 0.004, 0.3, 4), black, x - w * 0.4, y + h + 0.22, -d * 0.35, 0, 0, 0, false);
   // Mirrors on arms.
   for (const s of [-1, 1]) {
@@ -210,6 +211,7 @@ function cab(p: THREE.Object3D, x: number, y: number, w: number, h: number, d: n
     bx(p, 0.025, 0.12, 0.07, black, x + w * 0.48, y + h * 0.72, s * (d / 2 + 0.17));
     bx(p, 0.004, 0.1, 0.055, chrome(), x + w * 0.465, y + h * 0.72, s * (d / 2 + 0.17));
   }
+  return beacon;
 }
 
 // ---------- tractor ----------
@@ -252,7 +254,7 @@ export function buildTractor(color = 0xc8392b): VehicleModel {
   for (let i = 0; i < 5; i++) rb(body, 0.045, 0.22, 0.48, 0.015, 0x3a3d40, 0.97 + i * 0.05, 0.36, 0);
   // Cab base, cab and steps.
   rb(body, 0.66, 0.12, 0.68, 0.04, red, -0.3, 0.6, 0);
-  cab(body, -0.3, 0.66, 0.58, 0.5, 0.62, lights);
+  const beacon = cab(body, -0.3, 0.66, 0.58, 0.5, 0.62, lights);
   for (let i = 0; i < 3; i++) bx(body, 0.12, 0.02, 0.1, black, -0.12, 0.26 + i * 0.12, 0.36 + i * 0.012);
   cy(body, 0.01, 0.01, 0.45, chrome(), -0.03, 0.48, 0.38);
   // Rear mudguards with work and tail lights.
@@ -277,7 +279,7 @@ export function buildTractor(color = 0xc8392b): VehicleModel {
   bx(body, 0.2, 0.04, 0.08, dark, -0.8, 0.22, 0);
   for (const [z, c] of [[0.06, 0xc0392b], [0.1, 0x2e6fd0], [-0.06, 0xc0392b], [-0.1, 0x2e6fd0]] as const) cy(body, 0.012, 0.012, 0.04, c, -0.66, 0.66, z, 'x');
   mergeLocal(body, [...wheels, ...steer]);
-  return { root, body, wheels, lights, steer };
+  return { root, body, wheels, lights, steer, beacon };
 }
 
 // ---------- combine ----------
@@ -380,7 +382,7 @@ export function buildCombine(headerWidth: number): VehicleModel {
     bx(body, 1.2, 0.2, 0.02, 0xc28d17, -0.35, 1.64, s * (W * 0.36 + 0.03), s * 0.35, 0, 0);
     bx(body, 0.02, 0.2, W * 0.78, 0xc28d17, -0.35 + s * 0.62, 1.64, 0, 0, 0, s * -0.35);
   }
-  bx(body, 1.12, 0.02, W * 0.66, 0x8a6a28, -0.35, 1.6, 0);
+  bx(body, 1.12, 0.02, W * 0.66, 0x3a2f1c, -0.35, 1.3, 0); // tank floor
   // Engine deck with a round radiator screen and exhaust.
   bx(body, 0.45, 0.14, W * 0.6, dark, -1.02, 1.36, 0);
   for (const s of [-1, 1]) {
@@ -396,7 +398,7 @@ export function buildCombine(headerWidth: number): VehicleModel {
   put(body, extrude([[0.85, 0.35], [1.35, 0.3], [1.35, 0.75], [0.85, 0.95]], 0.52, 0.02), yel, 0, 0, 0);
   // Cab on a platform with railings, a ladder, and a light bar.
   rb(body, 0.62, 0.1, 0.84, 0.03, yel, 0.62, 1.24, 0);
-  cab(body, 0.64, 1.29, 0.54, 0.56, 0.74, lights);
+  const beacon = cab(body, 0.64, 1.29, 0.54, 0.56, 0.74, lights);
   for (let i = 0; i < 6; i++) bx(body, 0.03, 0.035, 0.07, lights, 0.95, 1.92, -0.3 + i * 0.12);
   for (const x of [0.32, 0.98]) cy(body, 0.01, 0.01, 0.3, chrome(), x, 1.44, W / 2 - 0.2);
   bx(body, 0.68, 0.012, 0.012, chrome(), 0.65, 1.58, W / 2 - 0.2);
@@ -416,7 +418,13 @@ export function buildCombine(headerWidth: number): VehicleModel {
   pipe.rotation.y = Math.PI * 0.94;
   mergeLocal(pipe);
   mergeLocal(body, [...wheels, ...steer, pipe]);
-  const model: VehicleModel = { root, body, wheels, lights, pipe, steer, steerSign: -1 };
+  // Grain heap in the tank, grown by the view as the tank fills.
+  const grain = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1, W * 0.64), new THREE.MeshLambertMaterial({ color: 0xe2bf5a, flatShading: true }));
+  grain.position.set(-0.35, 1.32, 0);
+  grain.scale.y = 0.01;
+  grain.visible = false;
+  body.add(grain);
+  const model: VehicleModel = { root, body, wheels, lights, pipe, steer, steerSign: -1, beacon, grain };
   setHeader(model, headerWidth);
   return model;
 }
@@ -454,6 +462,7 @@ export function buildRootHarvester(): VehicleModel {
   // Cab.
   rb(body, 0.62, 0.1, 0.8, 0.03, green, 0.55, 1.1, 0);
   cab(body, 0.56, 1.15, 0.52, 0.52, 0.7, lights);
+  const beacon = AMBER();
   // Digging unit at the front: two rows of shares and discs.
   const digger = new THREE.Group();
   digger.position.set(HEADER_OFFSET, 0, 0);
@@ -465,7 +474,7 @@ export function buildRootHarvester(): VehicleModel {
   }
   bx(digger, 0.05, 0.05, 2.0, dark, 0.34, 0.5, 0);
   for (const s of [-1, 1]) bx(body, 0.03, 0.06, 0.08, TAIL(), -1.3, 0.95, s * 0.4);
-  put(body, new THREE.CylinderGeometry(0.03, 0.036, 0.06, 10), AMBER(), 0.4, 1.8, 0.25, 0, 0, 0, false);
+  put(body, new THREE.CylinderGeometry(0.03, 0.036, 0.06, 10), beacon, 0.4, 1.8, 0.25, 0, 0, 0, false);
   void black;
   const pipe = new THREE.Group();
   pipe.position.set(-0.55, 1.6, -0.55);
@@ -476,7 +485,7 @@ export function buildRootHarvester(): VehicleModel {
   mergeLocal(pipe);
   mergeLocal(digger);
   mergeLocal(body, [...wheels, pipe, digger]);
-  return { root, body, wheels, lights, pipe, header: digger };
+  return { root, body, wheels, lights, pipe, header: digger, beacon };
 }
 
 // ---------- implements ----------
@@ -490,6 +499,8 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
   bx(root, 0.45, 0.06, 0.08, dark, len / 2 - 0.08, 0.36, 0);
   bx(root, 0.08, 0.14, 0.26, dark, len / 2 + 0.12, 0.38, 0);
   let fill: THREE.Mesh | undefined;
+  let tip: THREE.Group | undefined;
+  const spin: THREE.Group[] = [];
   if (kind === 'plow') {
     const blue = paint(0x3d7fc0, 0.14);
     // Bodies step back diagonally; the main beam runs straight through the top of every leg.
@@ -570,8 +581,14 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     link(root, [0, hy - hh / 2 - 0.1, 0], [-0.22, 0.42, 0], 0.08, 0x555555);
     for (const z of [0.17, -0.17]) {
       cy(root, 0.02, 0.02, 0.1, 0x777777, -0.3, 0.33, z);
-      cy(root, 0.15, 0.15, 0.02, 0x666666, -0.3, 0.27, z, 'y', 16);
-      for (let v = 0; v < 4; v++) bx(root, 0.13, 0.035, 0.01, 0x333333, -0.3 + Math.cos(v * 1.57) * 0.07, 0.3, z + Math.sin(v * 1.57) * 0.07, 0, v * 1.57, 0);
+      // Each disc spins on its own while spreading.
+      const d = new THREE.Group();
+      d.position.set(-0.3, 0.27, z);
+      root.add(d);
+      cy(d, 0.15, 0.15, 0.02, 0x666666, 0, 0, 0, 'y', 16);
+      for (let v = 0; v < 4; v++) bx(d, 0.13, 0.035, 0.01, 0x333333, Math.cos(v * 1.57) * 0.07, 0.03, Math.sin(v * 1.57) * 0.07, 0, v * 1.57, 0);
+      mergeLocal(d);
+      spin.push(d);
     }
     wheels.push(wheel(root, wr, 0.14, ax, wz, 0x2e7dc2, 1), wheel(root, wr, 0.14, ax, -wz, 0x2e7dc2, -1));
   } else if (kind === 'roller') {
@@ -643,27 +660,37 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     }
     wheels.push(wheel(root, 0.22, 0.12, 0.2, width / 2 + 0.1, 0x777777, 1), wheel(root, 0.22, 0.12, 0.2, -width / 2 - 0.1, 0x777777, -1));
   } else {
-    // Tipping grain trailer: ribbed sides, top rail, front ram, tandem axle with mudguards.
+    // Tipping grain trailer: the box hinges at the back and tips up to unload.
     const green = paint(0x3f8a3a, 0.16);
     const W = 1.2, L = 1.75, H = 0.52, y0 = 0.44;
-    bx(root, L, 0.06, W, 0x2f6e2f, -0.1, y0, 0);
-    bx(root, L + 0.1, 0.1, 0.16, dark, -0.1, y0 - 0.08, 0.3);
-    bx(root, L + 0.1, 0.1, 0.16, dark, -0.1, y0 - 0.08, -0.3);
-    for (const s of [-1, 1]) {
-      bx(root, L, H, 0.04, green, -0.1, y0 + H / 2, s * W / 2);
-      bx(root, L + 0.02, 0.04, 0.07, 0x2f6e2f, -0.1, y0 + H, s * W / 2);
-      for (let i = 0; i < 7; i++) bx(root, 0.04, H, 0.02, 0x357a33, -0.1 - L / 2 + 0.12 + i * (L - 0.24) / 6, y0 + H / 2, s * (W / 2 + 0.025));
-      fender(root, 0.3, 0.2, -0.1, 0.28, s * (W / 2 + 0.1), 0x222222, Math.PI * 0.7);
-      bx(root, 0.03, 0.05, 0.1, TAIL(), -0.1 - L / 2 - 0.02, y0 + 0.08, s * (W / 2 - 0.12));
+    const px = -0.1 - L / 2, py = y0 - 0.04; // hinge at the rear of the chassis
+    tip = new THREE.Group();
+    tip.position.set(px, py, 0);
+    root.add(tip);
+    const X = (x: number) => x - px, Y = (y: number) => y - py;
+    bx(tip, L, 0.06, W, 0x2f6e2f, X(-0.1), Y(y0), 0);
+    for (const sgn of [-1, 1]) {
+      bx(tip, L, H, 0.04, green, X(-0.1), Y(y0 + H / 2), sgn * W / 2);
+      bx(tip, L + 0.02, 0.04, 0.07, 0x2f6e2f, X(-0.1), Y(y0 + H), sgn * W / 2);
+      for (let i = 0; i < 7; i++) bx(tip, 0.04, H, 0.02, 0x357a33, X(-0.1 - L / 2 + 0.12 + i * (L - 0.24) / 6), Y(y0 + H / 2), sgn * (W / 2 + 0.025));
+      bx(tip, 0.03, 0.05, 0.1, TAIL(), X(-0.1 - L / 2 - 0.02), Y(y0 + 0.08), sgn * (W / 2 - 0.12));
     }
-    bx(root, 0.04, H, W, green, L / 2 - 0.1, y0 + H / 2, 0);
-    bx(root, 0.04, H, W, green, -L / 2 - 0.1, y0 + H / 2, 0);
-    cy(root, 0.04, 0.04, 0.5, chrome(0xb5b9bc), L / 2 - 0.02, y0 + 0.1, 0, 'y');
+    bx(tip, 0.04, H, W, green, X(L / 2 - 0.1), Y(y0 + H / 2), 0);
+    bx(tip, 0.04, H * 0.85, W, green, X(-L / 2 - 0.1), Y(y0 + H * 0.42), 0); // tailgate
     fill = new THREE.Mesh(new THREE.BoxGeometry(L - 0.1, 1, W - 0.1), new THREE.MeshLambertMaterial({ color: 0xe2bf5a, flatShading: true }));
-    fill.position.set(-0.1, y0, 0);
+    fill.position.set(X(-0.1), Y(y0), 0);
+    fill.userData.base = Y(y0) + 0.01;
     fill.visible = false;
     fill.receiveShadow = true;
-    root.add(fill);
+    tip.add(fill);
+    mergeLocal(tip, [fill]);
+    // Chassis, tipping ram and running gear stay put.
+    bx(root, L + 0.1, 0.1, 0.16, dark, -0.1, y0 - 0.1, 0.3);
+    bx(root, L + 0.1, 0.1, 0.16, dark, -0.1, y0 - 0.1, -0.3);
+    cy(root, 0.05, 0.05, 0.3, chrome(0xb5b9bc), L / 2 - 0.15, y0 + 0.02, 0, 'y');
+    for (const sgn of [-1, 1]) {
+      fender(root, 0.3, 0.2, -0.1, 0.28, sgn * (W / 2 + 0.1), 0x222222, Math.PI * 0.7);
+    }
     for (const x of [-0.42, 0.22]) {
       cy(root, 0.04, 0.04, W + 0.2, 0x2a2a2a, x, 0.26, 0, 'z'); // axle through both hubs
       for (const sgn of [-1, 1]) bx(root, 0.36, 0.05, 0.08, 0x3a3a3a, x, 0.31, sgn * 0.3); // leaf spring
@@ -671,6 +698,6 @@ export function buildTool(kind: ToolKind, width: number): ToolModel {
     }
   }
   void steel;
-  mergeLocal(root, fill ? [...wheels, fill] : wheels);
-  return fill ? { root, kind, width, fill, wheels } : { root, kind, width, wheels };
+  mergeLocal(root, [...wheels, ...(tip ? [tip] : []), ...spin]);
+  return { root, kind, width, wheels, fill, tip, spin: spin.length ? spin : undefined };
 }

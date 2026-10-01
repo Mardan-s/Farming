@@ -24,6 +24,8 @@ export interface ViewHost {
   readonly selectedVehicle: number | null;
   readonly selectedField: number | null;
   readonly follow: boolean;
+  /** True while a sheet is open beside the map (landscape), so the view shifts to stay visible. */
+  readonly sideSheet?: boolean;
 }
 
 /** What the UI can ask the 3D view to do. */
@@ -31,4 +33,6 @@ export interface ViewControls {
   zoomBy(factor: number): void;
   rotateBy(radians: number): void;
   centerOnCells(x: number, y: number): void;
+  /** Smoothly pan the camera to a spot. */
+  panTo(x: number, y: number): void;
 }

@@ -33,7 +33,9 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 
 **Day and night.** Daylight lasts about 2½ minutes at 1×, and nights pass in about 20 seconds.
 
-**Landscape.** Turn the phone sideways and menus open in a side panel so the farm stays in view.
+**Landscape.** Tap **Play in landscape** (welcome screen or Settings) to go full screen and lock the phone sideways where the browser allows it. Menus open in a side panel, and the camera shifts so the field or machine you tapped stays in view beside it.
+
+**Machines come alive.** Mounted implements lift on the hitch for the road and drop with a hydraulic hiss to work; tools unfold, spreader discs spin, the wagon tips its box to unload with grain pouring out the back. The combine's header drops to cut, its tank visibly fills and beeps when full, and the auger pours grain. Beacons flash on the job, exhaust puffs harder under load, the machine you drive pitches when accelerating and braking, and nearby machines rumble, crops rustle under the header and grain hisses as it pours.
 
 Grow the farm: buy **land plots**, more **machines**, and **upgrades** (wider plows and seeders, bigger combine tanks and wagons, faster tractors). The **market** price for each crop changes daily. Store grain in the silo and sell when prices spike.
 

@@ -3,13 +3,13 @@ import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { QUALITY, getQuality, isSafeMode, setSafeMode } from './quality';
 import {
   COMBINE_LEN, CROP_DEFS, ELEVATOR, HEADER_OFFSET, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS,
-  PARCEL_W, PUMP, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, SILO_UNLOAD, TOOL_LEN, WAGON_CAP, YARD, YARD_GATE, parcelPrice,
+  PARCEL_W, PUMP, ROAD, SELL_UNLOAD, SILO_POS, SILO_RADIUS, TOOL_LEN, WAGON_CAP, YARD, YARD_GATE, parcelPrice,
   type Op, type ToolKind, type Weather,
 } from '../game/config';
 import { CellState, type Field } from '../game/field';
 import type { Pt } from '../game/geometry';
 import { isHarvester, type Game, type Vehicle } from '../game/sim';
-import { setEngine, setRain, sfx } from '../audio';
+import { setEngine, setGrainPour, setHarvest, setMachineHum, setRain, sfx } from '../audio';
 import { PARCEL_COUNT, inRect, parcelRect } from '../game/world';
 import { Crops } from './crops';
 import { Ground } from './ground';
@@ -49,7 +49,15 @@ const FOV = 38;
 /** The pond south of the road, near the farm. */
 const POND = { x: 25, z: 72.2, rx: 5.2, rz: 2.6 };
 
-interface VehicleView { model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number; lights: THREE.Group; lh: number; steer: number }
+interface VehicleView {
+  model: VehicleModel; lx: number; ly: number; emitT: number; bubble: THREE.Sprite; pipeAngle: number; lights: THREE.Group; lh: number; steer: number;
+  /** Header height (0 down, 1 raised), last speed, pitch, tool and states for sounds. */
+  headerUp: number; ls: number; pitch: number; toolId: number | null; working: boolean; waiting: boolean;
+}
+/** Per-tool animation state: lift (0 down, 1 raised), unfold tween, tipping angle. */
+interface ToolFx { lift: number; scaleZ: number; tip: number; working: boolean }
+/** Mounted implements are lifted on the three-point hitch for transport. */
+const MOUNTED: Partial<Record<ToolKind, boolean>> = { plow: true, roller: true, weeder: true, planter: true };
 
 /** Flat strip following a polyline, lying on the ground. */
 function ribbon(points: Pt[], closed: boolean, width: number, y: number) {
@@ -114,6 +122,8 @@ export class View3D implements ViewControls {
   private stageCache = new Map<number, Int8Array>();
   private vViews = new Map<number, VehicleView>();
   private tViews = new Map<number, ToolModel>();
+  private toolFx = new Map<number, ToolFx>();
+  private soundT = 0;
   private pickables: THREE.Object3D[] = [];
   private fieldGroup = new THREE.Group();
   private parcelGroup = new THREE.Group();
@@ -674,7 +684,22 @@ export class View3D implements ViewControls {
     else this.dist = THREE.MathUtils.clamp(this.dist / f, 7, 110);
   }
   rotateBy(r: number) { this.yaw += r; }
-  centerOnCells(x: number, y: number) { this.target.set(x, 0, y); }
+  centerOnCells(x: number, y: number) { this.target.set(x, 0, y); this.panGoal = null; }
+  panTo(x: number, y: number) { this.panGoal = new THREE.Vector2(x, y); }
+  private panGoal: THREE.Vector2 | null = null;
+  private viewShift = 0;
+
+  /** Shifts the picture left while a side panel covers the right of the screen (landscape). */
+  private updateViewShift(dt: number) {
+    const w = window.innerWidth, h = window.innerHeight;
+    const want = this.host.sideSheet ? (Math.min(400, w * 0.42) + 16) / 2 : 0;
+    this.viewShift += (want - this.viewShift) * Math.min(1, dt * 6);
+    if (Math.abs(this.viewShift) < 0.5) {
+      if (this.camera.view?.enabled) this.camera.clearViewOffset();
+      return;
+    }
+    this.camera.setViewOffset(w, h, this.viewShift, 0, w, h);
+  }
 
   private groundAt(sx: number, sy: number): THREE.Vector3 | null {
     this.raycaster.setFromCamera(new THREE.Vector2((sx / window.innerWidth) * 2 - 1, -(sy / window.innerHeight) * 2 + 1), this.camera);
@@ -835,9 +860,18 @@ export class View3D implements ViewControls {
         this.target.z += (v.y - this.target.z) * k;
       }
     }
+    if (this.panGoal) {
+      const k = Math.min(1, dt * 4);
+      this.target.x += (this.panGoal.x - this.target.x) * k;
+      this.target.z += (this.panGoal.y - this.target.z) * k;
+      if (Math.hypot(this.panGoal.x - this.target.x, this.panGoal.y - this.target.z) < 0.05 || this.drag?.moved || driven) this.panGoal = null;
+    }
+    this.updateViewShift(dt);
     this.updateCamera();
+    this.frameDt = dt;
     this.syncTools();
     this.syncVehicles(dt);
+    this.updateMachineSounds(dt);
     this.updateSelection();
     this.updateDraft();
     this.updateWeather(dt);
@@ -867,6 +901,26 @@ export class View3D implements ViewControls {
     this.rotor.rotation.x -= dt * (w === 'storm' ? 6 : w === 'rain' ? 3.5 : 1.8);
     this.birds.update(this.time, this.night < 0.4 && w !== 'rain' && w !== 'storm' && this.snow < 0.5);
     this.lamp.set(this.night);
+  }
+
+  /** Grain pouring, crops being cut, and the rumble of working machines near the camera. */
+  private updateMachineSounds(dt: number) {
+    this.soundT += dt;
+    if (this.soundT < 0.2) return;
+    this.soundT = 0;
+    let pour = 0, cut = 0, hum = 0;
+    for (const v of this.sim.vehicles) {
+      const driven = this.sim.drivenId === v.id;
+      const att = driven ? 1 : Math.max(0, 1 - Math.hypot(v.x - this.target.x, v.y - this.target.z) / 28);
+      if (att <= 0) continue;
+      const unloading = v.unloadingTo != null || (v.steps[0]?.t === 'unload' && (this.sim.cargoOf(v)?.cargo.amount ?? 0) > 0);
+      if (unloading) pour = Math.max(pour, att);
+      if (v.working === 'harvest') cut = Math.max(cut, att);
+      if (!driven && (v.moving || v.working)) hum = Math.max(hum, att * (v.working ? 1 : 0.6));
+    }
+    setGrainPour(pour);
+    setHarvest(cut);
+    setMachineHum(hum);
   }
 
   private engineT = 0;
@@ -1029,9 +1083,16 @@ export class View3D implements ViewControls {
     if (this.rainAudioT > 0.5) { this.rainAudioT = 0; setRain(flakes ? 0 : this.rainLevel); }
   }
 
+  private frameDt = 0.016;
+
+  /** Within earshot of what the camera is looking at. */
+  private near(x: number, y: number, r: number) {
+    return Math.hypot(x - this.target.x, y - this.target.z) < r;
+  }
+
   private syncTools() {
     for (const [id, view] of this.tViews) {
-      if (!this.sim.tools.some(t => t.id === id)) { view.root.removeFromParent(); this.tViews.delete(id); }
+      if (!this.sim.tools.some(t => t.id === id)) { view.root.removeFromParent(); this.tViews.delete(id); this.toolFx.delete(id); }
     }
     for (const t of this.sim.tools) {
       const holder = t.attachedTo != null ? this.sim.vehicle(t.attachedTo) : undefined;
@@ -1039,7 +1100,11 @@ export class View3D implements ViewControls {
       const full = t.kind === 'wagon' || t.kind === 'spreader' ? 1 : this.sim.toolWidth(t.kind);
       const width = working ? full : Math.min(full, FOLDED[t.kind] ?? full);
       let view = this.tViews.get(t.id);
+      let fx = this.toolFx.get(t.id);
+      if (!fx) { fx = { lift: 1, scaleZ: 1, tip: 0, working }; this.toolFx.set(t.id, fx); }
       if (!view || view.width !== width) {
+        // Unfolding: start squeezed to the old width and spread out.
+        if (view && width > view.width) fx.scaleZ = view.width / width;
         if (view) { view.root.removeFromParent(); this.pickables.splice(this.pickables.indexOf(view.root), 1); }
         view = buildTool(t.kind, width);
         view.root.userData.toolId = t.id;
@@ -1049,14 +1114,31 @@ export class View3D implements ViewControls {
         this.tViews.set(t.id, view);
       }
       const moved = Math.hypot(t.x - view.root.position.x, t.y - view.root.position.z);
-      view.root.position.set(t.x, 0, t.y);
-      view.root.rotation.y = -t.heading;
+      const k = Math.min(1, this.frameDt * 4);
+      // Lowering and lifting, with a hiss of hydraulics when it changes.
+      if (working !== fx.working) {
+        fx.working = working;
+        if (this.near(t.x, t.y, 30)) sfx.hydraulic(working);
+      }
+      const liftWant = MOUNTED[t.kind] && holder ? (working ? 0 : 1) : 0;
+      fx.lift += (liftWant - fx.lift) * k;
+      fx.scaleZ += (1 - fx.scaleZ) * Math.min(1, this.frameDt * 3);
+      view.root.position.set(t.x, fx.lift * 0.16, t.y);
+      view.root.rotation.set(0, -t.heading, -fx.lift * 0.05);
+      view.root.scale.z = fx.scaleZ;
       for (const w of view.wheels) w.rotation.z -= moved / w.userData.radius;
+      if (view.spin && working) for (const d of view.spin) d.rotation.y += this.frameDt * 18;
+      if (view.tip) {
+        const step = holder?.steps[0];
+        const tipping = step?.t === 'unload' && t.load.amount > 0;
+        fx.tip += ((tipping ? 0.75 : 0) - fx.tip) * Math.min(1, this.frameDt * 1.5);
+        view.tip.rotation.z = fx.tip;
+      }
       if (view.fill) {
         const f = Math.min(1, t.load.amount / WAGON_CAP[this.sim.upgrades.wagon]);
         view.fill.visible = f > 0.01;
         view.fill.scale.y = Math.max(0.01, f * 0.52);
-        view.fill.position.y = 0.45 + view.fill.scale.y / 2;
+        view.fill.position.y = (view.fill.userData.base ?? 0.45) + view.fill.scale.y / 2;
         if (t.load.crop) (view.fill.material as THREE.MeshLambertMaterial).color.setHex(CROP_DEFS[t.load.crop].color);
       }
     }
@@ -1080,7 +1162,7 @@ export class View3D implements ViewControls {
         const shadow = blob(big ? 3.8 : 2.3, big ? 2.8 : 1.7);
         const lights = buildHeadlights(big ? 9 : 7, big ? 2.2 : 0.9);
         model.root.add(shadow, lights);
-        view = { model, lx: v.x, ly: v.y, emitT: 0, bubble, pipeAngle: Math.PI * 0.94, lights, lh: v.heading, steer: 0 };
+        view = { model, lx: v.x, ly: v.y, emitT: 0, bubble, pipeAngle: Math.PI * 0.94, lights, lh: v.heading, steer: 0, headerUp: 1, ls: 0, pitch: 0, toolId: v.toolId, working: false, waiting: false };
         this.vViews.set(v.id, view);
       }
       const m = view.model;
@@ -1089,7 +1171,25 @@ export class View3D implements ViewControls {
       view.ly = v.y;
       m.root.position.set(v.x, 0, v.y);
       m.root.rotation.y = -v.heading;
-      m.body.position.y = v.moving ? Math.abs(Math.sin(this.time * 22 + v.id)) * 0.015 : 0;
+      // Ride: a little bounce when rolling, a buzz when working, and pitch under acceleration and braking.
+      const driven = this.sim.drivenId === v.id;
+      const accel = driven ? (v.speed - view.ls) / Math.max(dt, 1e-3) : 0;
+      view.ls = v.speed;
+      view.pitch += (THREE.MathUtils.clamp(accel * 0.012, -0.05, 0.04) - view.pitch) * Math.min(1, dt * 5);
+      m.body.rotation.z = view.pitch;
+      m.body.position.y = (v.moving ? Math.abs(Math.sin(this.time * 22 + v.id)) * 0.015 : 0) + (v.working ? Math.sin(this.time * 47 + v.id) * 0.005 : 0);
+      // Beacon flashes while the machine is on a job.
+      if (m.beacon) {
+        const active = v.working != null || (v.moving && (v.steps.length > 0 || driven));
+        m.beacon.emissiveIntensity = active ? 0.25 + 2 * Math.max(0, Math.sin(this.time * 8 + v.id * 1.7)) ** 4 : 0.2;
+      }
+      // Hitch clunk, tank-full beeps.
+      if (view.toolId !== v.toolId) {
+        view.toolId = v.toolId;
+        if (this.near(v.x, v.y, 30)) sfx.clunk();
+      }
+      if (v.waiting && !view.waiting && isHarvester(v) && (driven || this.near(v.x, v.y, 40))) sfx.tankFull();
+      view.waiting = v.waiting;
       for (const w of m.wheels) w.rotation.z -= moved / w.userData.radius;
       if (m.steer) {
         // Steer the wheels: from the stick when you drive, otherwise from how fast the machine turns.
@@ -1103,7 +1203,25 @@ export class View3D implements ViewControls {
       if (v.kind === 'combine') setHeader(m, this.sim.toolWidth('header'));
       if (isHarvester(v)) {
         if (v.working && m.reel) m.reel.rotation.z -= dt * 5;
-        const want = v.unloadingTo != null ? Math.PI / 2 : Math.PI * 0.94;
+        // Header drops to the ground while cutting, lifts for the road.
+        const cutting = driven ? this.sim.implDown : v.steps[0]?.t === 'work';
+        if (cutting !== view.working) {
+          view.working = cutting;
+          if (driven || this.near(v.x, v.y, 30)) sfx.hydraulic(cutting);
+        }
+        view.headerUp += ((cutting ? 0 : 1) - view.headerUp) * Math.min(1, dt * 3);
+        if (m.header) { m.header.position.y = view.headerUp * 0.14; m.header.rotation.z = view.headerUp * 0.04; }
+        // Grain heap rising in the tank.
+        if (m.grain) {
+          const info = this.sim.cargoOf(v);
+          const f = info ? Math.min(1, info.cargo.amount / info.cap) : 0;
+          m.grain.visible = f > 0.01;
+          m.grain.scale.y = Math.max(0.01, f * 0.34);
+          m.grain.position.y = 1.31 + m.grain.scale.y / 2;
+          if (info?.cargo.crop) (m.grain.material as THREE.MeshLambertMaterial).color.setHex(CROP_DEFS[info.cargo.crop].color);
+        }
+        const unloadingHere = v.unloadingTo != null || v.steps[0]?.t === 'unload';
+        const want = unloadingHere ? Math.PI / 2 : Math.PI * 0.94;
         view.pipeAngle += (want - view.pipeAngle) * Math.min(1, dt * 3);
         m.pipe!.rotation.y = view.pipeAngle;
       }
@@ -1157,9 +1275,16 @@ export class View3D implements ViewControls {
     } else if (v.moving && Math.random() < 0.35) {
       P.emit(v.x - dx * 0.9, 0.1, v.y - dz * 0.9, rand(0.3), 0.3, rand(0.3), { color: 0xa08a6a, life: 1, size: [0.2, 0.6], alpha: 0.3 });
     }
-    if (v.moving && v.kind === 'tractor' && Math.random() < 0.5) {
-      P.emit(v.x + dx * 0.58 + lx * 0.14, 1.12, v.y + dz * 0.58 + lz * 0.14, rand(0.1), 0.7, rand(0.1),
-        { color: 0x6a6a6a, life: 1.1, size: [0.08, 0.4], alpha: 0.35, gravity: -0.1 });
+    // Exhaust: harder and darker under load.
+    const driven = this.sim.drivenId === v.id;
+    const engineOn = v.moving || v.working != null || driven || v.steps.length > 0;
+    const load = v.working ? 1 : driven && view.pitch > 0.01 ? 0.9 : v.moving ? 0.45 : 0.15;
+    if (engineOn && Math.random() < 0.2 + 0.6 * load) {
+      // Local exhaust tip (forward, up, side) for each machine; local +z is world (-dz, dx).
+      const [ex, ey, ez] = v.kind === 'tractor' ? [0.13, 1.32, 0.16] : v.kind === 'combine' ? [-0.85, 1.78, -0.3] : [-0.2, 1.4, -0.3];
+      const shade = Math.round(0x70 - load * 0x38);
+      P.emit(v.x + dx * ex - dz * ez, ey, v.y + dz * ex + dx * ez, rand(0.1), 0.6 + load * 0.5, rand(0.1),
+        { color: (shade << 16) | (shade << 8) | shade, life: 1 + load * 0.6, size: [0.08, 0.35 + load * 0.3], alpha: 0.25 + load * 0.25, gravity: -0.1 });
     }
     // Grain stream from the combine pipe into the wagon.
     if (isHarvester(v) && v.unloadingTo != null && Math.abs(view.pipeAngle - Math.PI / 2) < 0.2) {
@@ -1172,12 +1297,22 @@ export class View3D implements ViewControls {
     }
     const step = v.steps[0];
     if (step?.t === 'unload') {
-      const p = step.dest === 'sell' ? SELL_UNLOAD : SILO_UNLOAD;
       const crop = this.sim.cargoOf(v)?.cargo.crop;
-      if (crop) {
+      const wagon = this.sim.toolOf(v);
+      const fx = wagon ? this.toolFx.get(wagon.id) : undefined;
+      if (crop && wagon && fx && fx.tip > 0.3) {
+        // Grain sliding out of the back of the tipped wagon.
+        const tx = Math.cos(wagon.heading), tz = Math.sin(wagon.heading);
+        const rx = wagon.x - tx * (TOOL_LEN.wagon / 2 + 0.05), rz = wagon.y - tz * (TOOL_LEN.wagon / 2 + 0.05);
+        for (let i = 0; i < 4; i++) {
+          P.emit(rx + rand(0.5) * tz, 0.55 + Math.random() * 0.2, rz - rand(0.5) * tx, -tx * 0.6 + rand(0.3), 0.1, -tz * 0.6 + rand(0.3),
+            { color: CROP_DEFS[crop].color, life: 0.5, size: [0.14, 0.1], alpha: 1, gravity: 6 });
+        }
+      } else if (crop && isHarvester(v) && Math.abs(view.pipeAngle - Math.PI / 2) < 0.2 && view.model.pipe) {
+        const tip = view.model.pipe.localToWorld(new THREE.Vector3(1.9, -0.15, 0));
         for (let i = 0; i < 3; i++) {
-          P.emit(p.x + rand(1), 1 + Math.random() * 0.3, p.y + rand(0.6), rand(0.4), -0.3, rand(0.4),
-            { color: CROP_DEFS[crop].color, life: 0.5, size: [0.14, 0.1], alpha: 1, gravity: 5 });
+          P.emit(tip.x + rand(0.08), tip.y, tip.z + rand(0.08), rand(0.2), -0.5, rand(0.2),
+            { color: CROP_DEFS[crop].color, life: 0.45, size: [0.12, 0.1], alpha: 1, gravity: 6 });
         }
       }
     }
