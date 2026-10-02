@@ -8,6 +8,7 @@ export interface TapInfo {
   elevator: boolean;
   parcel: number;
   fieldId: number;
+  penId: number;
 }
 
 /** What the 3D view calls on the UI layer. */
@@ -26,6 +27,10 @@ export interface ViewHost {
   readonly follow: boolean;
   /** True while a sheet is open beside the map (landscape), so the view shifts to stay visible. */
   readonly sideSheet?: boolean;
+  /** CSS pixels a bottom sheet covers that the picture should be lifted clear of (portrait). */
+  readonly bottomCover?: number;
+  /** Placing a pen: draftCells shows its footprint. */
+  readonly placing?: boolean;
 }
 
 /** What the UI can ask the 3D view to do. */

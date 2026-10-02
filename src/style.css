@@ -405,7 +405,8 @@ button.price { font-family: var(--fig); font-weight: 700; background: var(--pape
 .steps { padding-left: 22px; line-height: 1.55; font-size: 14.5px; }
 .steps b { font-family: var(--display); }
 .tabs { display: flex; margin: 10px 0 4px; border: 1px solid var(--rule-2); border-radius: 3px; overflow: hidden; }
-.tabs button { flex: 1; border: 0; border-right: 1px solid var(--rule-2); border-radius: 0; background: transparent; min-height: 38px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
+.tabs button { flex: 1 1 0; min-width: 0; padding: 0 4px; border: 0; border-right: 1px solid var(--rule-2); border-radius: 0; background: transparent; min-height: 38px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
+@media (max-width: 420px) { .tabs button { font-size: 11.5px; letter-spacing: 0.02em; } }
 .tabs button:last-child { border-right: 0; }
 .tabs button.on { background: var(--ink); color: var(--paper-3); box-shadow: none; }
 .toolbelt { display: flex; flex-wrap: wrap; gap: 6px; }

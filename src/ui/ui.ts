@@ -6,6 +6,7 @@ import {
 import type { Field } from '../game/field';
 import type { Pt } from '../game/geometry';
 import { GOALS } from '../game/goals';
+import { ANIMAL_DEFS, ANIMAL_KINDS, PRODUCTS, PRODUCT_DEFS, type AnimalKind } from '../game/animals';
 import { TOOL_NAMES, VEHICLE_NAMES, isHarvester, plantWindow, type Game, type Ledger, type Need, type Op, type Vehicle } from '../game/sim';
 import { parcelRect } from '../game/world';
 import { setMuted, sfx } from '../audio';
@@ -24,7 +25,9 @@ type Panel =
   | { kind: 'field'; fid: number; vid?: number; view: FieldView }
   | { kind: 'draw' }
   | { kind: 'parcel'; index: number }
-  | { kind: 'silo' };
+  | { kind: 'silo' }
+  | { kind: 'pen'; id: number }
+  | { kind: 'place'; animal: AnimalKind };
 
 type Modal = null | 'shop' | 'market' | 'fleet' | 'settings' | 'welcome' | 'confirm' | 'finance';
 
@@ -36,6 +39,7 @@ const vIco = (v: Vehicle) => icon(VEHICLE_ICON[v.kind]);
 const cap1 = (t: string) => t[0].toUpperCase() + t.slice(1);
 const pad2 = (n: number) => String(n).padStart(2, '0');
 const roundTo = (n: number, step: number) => Math.round(n / step) * step;
+const ANIMAL_ICON: Record<AnimalKind, string> = { chicken: 'chicken', cow: 'cow', pig: 'pig', sheep: 'sheep' };
 
 const TOAST_ICON: Record<string, string> = { good: 'check', bad: 'warn', info: 'flag', goal: 'flag' };
 
@@ -50,7 +54,8 @@ export class UI implements ViewHost {
 
   private panel: Panel = { kind: 'home' };
   private modal: Modal = null;
-  private shopTab: 'vehicles' | 'upgrades' | 'land' = 'vehicles';
+  private shopTab: 'vehicles' | 'animals' | 'upgrades' | 'land' = 'vehicles';
+  private placeAt: { x: number; y: number } | null = null;
   private goalOpen: boolean;
   private draftReason = '';
   private liveT = 0;
@@ -180,6 +185,7 @@ export class UI implements ViewHost {
   onTap(info: TapInfo) {
     if (this.modal || this.sim.drivenId != null) return;
     if (this.drawMode) { this.addCorner(info.cx, info.cy); return; }
+    if (this.panel.kind === 'place') { this.movePlacement(info.cx, info.cy); return; }
     const selV = this.selectedVehicle != null ? this.sim.vehicle(this.selectedVehicle) : undefined;
 
     if (info.vehicleId != null) {
@@ -200,6 +206,14 @@ export class UI implements ViewHost {
       return;
     }
     if (info.silo) { sfx.tap(); this.clearSelection(); this.setPanel({ kind: 'silo' }); return; }
+    if (info.penId >= 0) {
+      sfx.tap();
+      this.clearSelection();
+      this.setPanel({ kind: 'pen', id: info.penId });
+      const pen = this.sim.pen(info.penId);
+      if (pen) this.view.panTo(pen.x + ANIMAL_DEFS[pen.kind].w / 2, pen.y + ANIMAL_DEFS[pen.kind].h / 2);
+      return;
+    }
     if (info.elevator) { sfx.tap(); this.openModal('market'); return; }
     if (info.fieldId >= 0) {
       sfx.tap();
@@ -322,6 +336,8 @@ export class UI implements ViewHost {
     }
     if (ctx.unload) out.push(b('dUnload', 'unload', ctx.unload === 'sell' ? 'Sell load' : 'Into silo', 'primary'));
     if (ctx.refuel) out.push(b('dRefuel', 'fuel', 'Refuel', 'primary'));
+    if (ctx.load) out.push(b('dLoad', 'silo', 'Load feed', 'primary'));
+    if (ctx.feedPen != null) out.push(b('dFeed', 'wagon', 'Feed animals', 'primary'));
     if (ctx.hitch) out.push(b('dHitch', 'unhitch', ctx.hitch === 'hitch' ? `Hitch ${ctx.hitchName}` : `Drop ${ctx.hitchName}`));
     out.push(b('exitDrive', 'exit', 'Get out'));
     $('#dr-actions').innerHTML = out.join('');
@@ -575,6 +591,71 @@ export class UI implements ViewHost {
         if (on) this.toast(`We'll tell you when ${CROP_DEFS[c].name.toLowerCase()} sells high (${money(sim.highPrice(c))} or more).`, 'info', 'market');
         break;
       }
+      case 'placePen': {
+        const k = arg as AnimalKind;
+        sfx.select();
+        this.modal = null;
+        this.clearSelection();
+        this.placeAt = null;
+        this.draftCells = [];
+        this.draftValid = false;
+        this.draftReason = '';
+        this.setPanel({ kind: 'place', animal: k });
+        this.toast(`Tap your land where the ${ANIMAL_DEFS[k].pen.toLowerCase()} should go.`, 'info', ANIMAL_ICON[k]);
+        return;
+      }
+      case 'cancelPlace': sfx.tap(); this.placeAt = null; this.draftCells = []; this.setPanel({ kind: 'home' }); return;
+      case 'buildPen': {
+        const p = this.panel;
+        if (p.kind !== 'place' || !this.placeAt) return;
+        const err = sim.buildPen(p.animal, this.placeAt.x, this.placeAt.y);
+        if (err) { sfx.error(); this.toast(err, 'bad'); return; }
+        sfx.buy();
+        const pen = sim.pens[sim.pens.length - 1];
+        this.placeAt = null;
+        this.draftCells = [];
+        this.toast(`${ANIMAL_DEFS[p.animal].pen} built! ${ANIMAL_DEFS[p.animal].start} ${ANIMAL_DEFS[p.animal].plural.toLowerCase()} moved in.`, 'good', ANIMAL_ICON[p.animal]);
+        this.setPanel({ kind: 'pen', id: pen.id });
+        return;
+      }
+      case 'penFeed': {
+        const p = this.panel;
+        if (p.kind !== 'pen') return;
+        const err = sim.orderFeed(p.id);
+        if (err) { sfx.error(); this.toast(err, 'bad'); } else { sfx.confirm(); this.toast('A worker is loading feed at the silo.', 'info', 'wagon'); }
+        break;
+      }
+      case 'penAuto': { const pen = this.panel.kind === 'pen' ? sim.pen(this.panel.id) : undefined; if (pen) { pen.autoFeed = !pen.autoFeed; sfx.tap(); } break; }
+      case 'penBuy': { const err = this.panel.kind === 'pen' ? sim.buyAnimal(this.panel.id) : 'No pen'; if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.buy(); break; }
+      case 'penSellAnimal': { const err = this.panel.kind === 'pen' ? sim.sellAnimal(this.panel.id) : 'No pen'; if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.cash(); break; }
+      case 'penSell': {
+        const p = this.panel;
+        if (p.kind !== 'pen') return;
+        const got = sim.sellProduce(p.id);
+        if (got > 0) this.toast(`Sold for ${money(got)}.`, 'good', 'coin'); else { sfx.error(); this.toast('Nothing to sell yet.', 'bad'); }
+        break;
+      }
+      case 'sellProduct': {
+        let got = 0;
+        for (const pen of sim.pens) if (ANIMAL_DEFS[pen.kind].product === arg) got += sim.sellProduce(pen.id);
+        if (got > 0) this.toast(`Sold ${PRODUCT_DEFS[arg as keyof typeof PRODUCT_DEFS].name.toLowerCase()} for ${money(got)}.`, 'good', 'coin');
+        break;
+      }
+      case 'penDemolish': {
+        const p = this.panel;
+        if (p.kind !== 'pen') return;
+        const pen = sim.pen(p.id);
+        if (!pen) return;
+        this.ask(`Pull down the ${ANIMAL_DEFS[pen.kind].pen.toLowerCase()}? Its ${pen.animals} ${ANIMAL_DEFS[pen.kind].plural.toLowerCase()} will be sold.`, 'Pull down', () => {
+          for (let i = pen.animals; i > 0; i--) sim.sellAnimal(pen.id);
+          sim.sellProduce(pen.id);
+          sim.demolishPen(pen.id);
+          this.setPanel({ kind: 'home' });
+        });
+        return;
+      }
+      case 'dFeed': { const err = sim.driverFeed(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.confirm(); return; }
+      case 'dLoad': { const err = sim.driverLoad(); if (err) { sfx.error(); this.toast(err, 'bad'); } else sfx.confirm(); return; }
       case 'deliverTo': sim.deliverTo = arg as 'silo' | 'sell'; sfx.tap(); break;
       case 'quality':
         if (arg === getQuality()) return;
@@ -628,6 +709,20 @@ export class UI implements ViewHost {
   }
 
   /** Landscape phones show sheets in a side panel; the 3D view keeps what you tapped beside it. */
+  /** In portrait, lift the picture so the pen stays visible above its sheet. */
+  get bottomCover() {
+    if (this.panel.kind !== 'pen' || this.sideSheet || this.sim.drivenId != null) return 0;
+    const now = performance.now();
+    if (now - this.coverAt > 400) {
+      this.coverAt = now;
+      const sh = document.querySelector('#panel .sheet') as HTMLElement | null;
+      this.cover = sh ? sh.getBoundingClientRect().height : 0;
+    }
+    return this.cover;
+  }
+  private cover = 0;
+  private coverAt = 0;
+
   get sideSheet() {
     const land = window.innerWidth > window.innerHeight && window.innerHeight <= 600;
     return land && this.sim.drivenId == null && this.panel.kind !== 'home' && this.panel.kind !== 'draw';
@@ -670,6 +765,25 @@ export class UI implements ViewHost {
     this.selectedVehicle = pick.vehicle.id;
     this.follow = true;
     this.setPanel({ kind: 'vehicle', id: pick.vehicle.id });
+  }
+
+  get placing() { return this.panel.kind === 'place'; }
+
+  /** Centers the pen footprint on the tapped spot and checks it. */
+  private movePlacement(cx: number, cy: number) {
+    const p = this.panel;
+    if (p.kind !== 'place') return;
+    const d = ANIMAL_DEFS[p.animal];
+    const x = Math.round(cx - d.w / 2), y = Math.round(cy - d.h / 2);
+    this.placeAt = { x, y };
+    const cells: Pt[] = [];
+    for (let yy = y; yy < y + d.h; yy++) for (let xx = x; xx < x + d.w; xx++) cells.push({ x: xx, y: yy });
+    this.draftCells = cells;
+    const res = this.sim.world.validatePen(p.animal, x, y, this.sim.owned);
+    this.draftValid = res.ok;
+    this.draftReason = res.reason ?? '';
+    sfx.corner();
+    this.render(true);
   }
 
   // ---------- field drawing ----------
@@ -804,6 +918,23 @@ export class UI implements ViewHost {
       case 'flime': return () => { const s = summary(); return s && s.needLime ? `${Math.round((s.needLime / s.total) * 100)}% sour` : 'OK'; };
       case 'fweeds': return () => { const s = summary(); return s && s.weedy ? `${Math.round((s.weedy / s.total) * 100)}%` : 'None'; };
       case 'silo': return () => liters(sim.silo[idStr as CropId] ?? 0);
+      case 'panimals': return () => { const p = sim.pen(id); return p ? `${p.animals} / ${ANIMAL_DEFS[p.kind].cap}` : ''; };
+      case 'phappy': return () => `${Math.round(sim.pen(id)?.happiness ?? 0)}%`;
+      case 'pfeed': return () => { const p = sim.pen(id); if (!p) return ''; const days = sim.penFeedDays(p); return p.food <= 0 ? 'Empty' : days > 99 ? 'Plenty' : `${days.toFixed(1)} d`; };
+      case 'pstored': return () => { const p = sim.pen(id); if (!p) return ''; const pd = PRODUCT_DEFS[ANIMAL_DEFS[p.kind].product]; return `${Math.floor(p.stored).toLocaleString()} ${pd.unit}`; };
+      case 'ptrough': return () => { const p = sim.pen(id); return p ? `${liters(p.food)} / ${liters(ANIMAL_DEFS[p.kind].trough)}` : ''; };
+      case 'pfeedsilo': return () => { const p = sim.pen(id); return p ? liters(sim.feedInSilo(p.kind)) : ''; };
+      case 'prate': return () => { const p = sim.pen(id); if (!p) return ''; const d = ANIMAL_DEFS[p.kind]; const units = p.animals * d.perDay; return `${units < 10 ? units.toFixed(1) : Math.round(units)} ${PRODUCT_DEFS[d.product].unit} (${money(units * sim.productPrices[d.product])})`; };
+      case 'pstatus': return () => {
+        const p = sim.pen(id);
+        if (!p) return '';
+        const d = ANIMAL_DEFS[p.kind];
+        if (p.animals <= 0) return 'Empty. Buy some animals.';
+        if (p.food <= 0) return `Out of feed! The ${d.plural.toLowerCase()} have stopped producing.`;
+        if (p.food < d.trough * 0.2) return 'Feed is running low.';
+        if (p.stored >= d.storage - 0.5) return 'Storage full: sell before it goes to waste.';
+        return p.happiness > 75 ? `Well fed and happy.` : 'Settling in.';
+      };
       case 'vfuel': return () => { const v = sim.vehicle(id); return v ? `${Math.round(v.fuel)} / ${FUEL_CAP[v.kind]} L` : ''; };
       case 'vcond': return () => { const v = sim.vehicle(id); return v ? `${Math.round(v.condition)}%` : ''; };
     }
@@ -933,6 +1064,21 @@ export class UI implements ViewHost {
           </section>`;
       }
       case 'field': return this.renderField(p);
+      case 'place': {
+        const d = ANIMAL_DEFS[p.animal];
+        const msg = !this.placeAt ? `Tap your land to place it (${d.w} × ${d.h} cells). The gate and feed trough face down the screen.`
+          : this.draftValid ? `Looks good. Build here for ${money(d.penCost)}?` : this.draftReason;
+        return `<section class="sheet">
+          <header class="sh-head"><span class="sh-ico">${icon(ANIMAL_ICON[p.animal])}</span>
+            <div class="sh-title"><small class="eyebrow">Build</small><h3>${d.pen}</h3></div></header>
+          <p class="note ${this.placeAt && !this.draftValid ? 'warn' : ''}">${msg}</p>
+          <div class="btnrow">
+            <button data-act="cancelPlace">${icon('close')}Cancel</button>
+            <button class="primary" data-act="buildPen" ${this.placeAt && this.draftValid && sim.money >= d.penCost ? '' : 'disabled'}>${icon('check')}Build</button>
+          </div>
+        </section>`;
+      }
+      case 'pen': return this.renderPen(p.id);
       case 'parcel': {
         const price = parcelPrice(p.index);
         const r = parcelRect(p.index);
@@ -961,6 +1107,49 @@ export class UI implements ViewHost {
                 <button class="mini" data-act="sellSilo" data-arg="${c}" ${sim.silo[c] > 0 ? '' : 'disabled'}>Sell</button></div>`).join('')}</div>
           </section>`;
     }
+  }
+
+  private renderPen(id: number) {
+    const sim = this.sim;
+    const pen = sim.pen(id);
+    if (!pen) return '';
+    const d = ANIMAL_DEFS[pen.kind];
+    const pd = PRODUCT_DEFS[d.product];
+    const hungry = pen.food <= 0;
+    const stamp = hungry ? '<span class="stamp red">Hungry</span>' : pen.happiness > 75 ? '<span class="stamp green">Happy</span>' : '<span class="stamp brown">Content</span>';
+    const price = sim.productPrices[d.product];
+    const run = sim.vehicles.find(v => v.steps.some(st => (st.t === 'load' || st.t === 'unload') && st.penId === id));
+    return `<section class="sheet">
+      ${this.sheetHead(`${d.plural} · ${d.w}×${d.h}`, d.pen, { ico: ANIMAL_ICON[pen.kind], stamp })}
+      <p class="status" data-live="pstatus:${id}"></p>
+      <dl class="soil">
+        <div><dt>${d.plural}</dt><dd class="fig" data-live="panimals:${id}"></dd></div>
+        <div><dt>Happy</dt><dd class="fig" data-live="phappy:${id}"></dd></div>
+        <div><dt>Feed</dt><dd class="fig" data-live="pfeed:${id}"></dd></div>
+        <div><dt>${pd.name}</dt><dd class="fig" data-live="pstored:${id}"></dd></div>
+      </dl>
+      <div class="ledger">
+        <div class="lrow static"><span class="lr-ico">${icon('wagon')}</span>
+          <span class="lr-main"><span class="lr-line"><b>Feed trough</b><i></i><span class="fig" data-live="ptrough:${id}"></span></span>
+          <small>Eats ${d.diet.map(c => CROP_DEFS[c].name.toLowerCase()).join(', ')} from your silo (in the silo now: <span class="fig" data-live="pfeedsilo:${id}"></span>). ${run ? `<b class="who">${run.name} is bringing feed.</b>` : 'Drive a wagon here yourself, or send a worker.'}</small>
+          <span class="job-btns">
+            <button class="primary" data-act="penFeed" ${run ? 'disabled' : ''}>${icon('fleet')}<span>Bring feed</span></button>
+            <button data-act="penAuto" class="${pen.autoFeed ? 'on' : ''}">${icon('check')}<span>Auto-feed ${pen.autoFeed ? 'on' : 'off'}</span></button>
+          </span></span></div>
+        <div class="lrow static"><span class="lr-ico">${icon(pd.icon)}</span>
+          <span class="lr-main"><span class="lr-line"><b>${pd.name}</b><i></i><span class="fig">${money(price)} / ${pd.unit === 'L' ? 'L' : pd.unit === 'kg' ? 'kg' : pd.unit.replace(/s$/, '')}</span></span>
+          <small>About <span class="fig" data-live="prate:${id}"></span> a day when fed and happy.</small></span>
+          <button class="mini" data-act="penSell">Sell</button></div>
+        <div class="lrow static"><span class="lr-ico">${icon(ANIMAL_ICON[pen.kind])}</span>
+          <span class="lr-main"><span class="lr-line"><b>Buy or sell ${d.plural.toLowerCase()}</b><i></i><span class="fig">${money(d.animalCost)}</span></span>
+          <small>Happy ${d.plural.toLowerCase()} ${d.breedDays ? 'raise young on their own' : 'give piglets you can sell'}. Room for ${d.cap}.</small>
+          <span class="job-btns">
+            <button class="primary" data-act="penBuy" ${pen.animals < d.cap && sim.money >= d.animalCost ? '' : 'disabled'}>${icon('plus')}<span>Buy one</span></button>
+            <button data-act="penSellAnimal" ${pen.animals > 0 ? '' : 'disabled'}>${icon('minus')}<span>Sell one <span class="fig">${money(d.animalCost * 0.6)}</span></span></button>
+          </span></span></div>
+      </div>
+      <div class="btnrow"><button class="danger" data-act="penDemolish">${icon('trash')}Pull down</button></div>
+    </section>`;
   }
 
   private needRow(f: Field, n: Need, vid: number | undefined, next: boolean) {
@@ -1104,7 +1293,7 @@ export class UI implements ViewHost {
             <li>When it turns golden, <b>harvest</b>. A tractor hauls the grain to the sell point.</li>
             <li>Or tap a machine and <b>Drive</b> it yourself: hired workers cost wages, you don't.</li>
           </ol>
-          <p class="note">Each crop has planting seasons and nothing grows in winter. Rain stops the combines, and storms flatten ripe crops left standing. Machines burn fuel (the pump is by the silo) and wear out.</p>
+          <p class="note">Each crop has planting seasons and nothing grows in winter. Rain stops the combines, and storms flatten ripe crops left standing. Machines burn fuel (the pump is by the silo) and wear out. Build <b>animal pens</b> from the Shop: they eat grain from your silo and give eggs, milk, wool and piglets.</p>
           <div class="btnrow">
             <button class="primary" data-act="closeModal">Start farming</button>
             <button data-act="landscape">${icon('rotate')}Play in landscape</button>
@@ -1125,7 +1314,7 @@ export class UI implements ViewHost {
         </div>`;
       case 'shop': {
         const tabs = `<div class="tabs">
-          ${(['vehicles', 'upgrades', 'land'] as const).map(t => `<button data-act="shopTab" data-arg="${t}" class="${this.shopTab === t ? 'on' : ''}">${{ vehicles: 'Machines', upgrades: 'Upgrades', land: 'Land' }[t]}</button>`).join('')}
+          ${(['vehicles', 'animals', 'upgrades', 'land'] as const).map(t => `<button data-act="shopTab" data-arg="${t}" class="${this.shopTab === t ? 'on' : ''}">${{ vehicles: 'Machines', animals: 'Animals', upgrades: 'Upgrades', land: 'Land' }[t]}</button>`).join('')}
         </div>`;
         let body = '';
         if (this.shopTab === 'vehicles') {
@@ -1137,6 +1326,18 @@ export class UI implements ViewHost {
               <span class="lr-ico">${icon(SHOP_ICON[it.id])}</span>
               <span class="lr-main"><span class="lr-line"><b>${it.name}</b><i></i><span class="own">owned ${owned}</span></span><small>${it.desc}</small></span>
               <button class="price" data-act="buyItem" data-arg="${it.id}" ${sim.money >= it.cost ? '' : 'disabled'}>${money(it.cost)}</button>
+            </div>`;
+          }).join('');
+        } else if (this.shopTab === 'animals') {
+          body = ANIMAL_KINDS.map(k => {
+            const d = ANIMAL_DEFS[k];
+            const owned = sim.pens.filter(p => p.kind === k).length;
+            const pd = PRODUCT_DEFS[d.product];
+            return `<div class="lrow static">
+              <span class="lr-ico">${icon(ANIMAL_ICON[k])}</span>
+              <span class="lr-main"><span class="lr-line"><b>${d.pen}</b><i></i><span class="own">${owned ? `built ${owned}` : `${d.w}×${d.h}`}</span></span>
+                <small>${d.start} ${d.plural.toLowerCase()} included (room for ${d.cap}). They eat ${d.diet.slice(0, 3).map(c => CROP_DEFS[c].name.toLowerCase()).join(', ')}… and give ${pd.name.toLowerCase()}.</small></span>
+              <button class="price" data-act="placePen" data-arg="${k}" ${sim.money >= d.penCost ? '' : 'disabled'}>${money(d.penCost)}</button>
             </div>`;
           }).join('');
         } else if (this.shopTab === 'upgrades') {
@@ -1186,6 +1387,14 @@ export class UI implements ViewHost {
           ${head('Grain market', 'Prices per 1,000 L')}
           <p class="note">Prices move every day. Tap a crop to see its price history and get told when it sells high.</p>
           <div class="ledger">${rows}</div>
+          ${sim.pens.length ? `<p class="eyebrow gap">Farm produce</p><div class="ledger">${PRODUCTS.filter(pr => sim.pens.some(pen => ANIMAL_DEFS[pen.kind].product === pr)).map(pr => {
+            const pd = PRODUCT_DEFS[pr];
+            const have = sim.pens.filter(pen => ANIMAL_DEFS[pen.kind].product === pr).reduce((a, pen) => a + Math.floor(pen.stored), 0);
+            return `<div class="lrow static"><span class="lr-ico">${icon(pd.icon)}</span>
+              <span class="lr-main"><span class="lr-line"><b>${pd.name}</b><i></i><span class="fig">${money(sim.productPrices[pr])}</span></span><small>${have.toLocaleString()} ${pd.unit} stored</small></span>
+              ${this.sparkline(sim.productHistory[pr], pd.basePrice)}
+              <button class="mini" data-act="sellProduct" data-arg="${pr}" ${have > 0 ? '' : 'disabled'}>Sell</button></div>`;
+          }).join('')}</div>` : ''}
           <p class="eyebrow gap">Harvests go to</p>
           <div class="tabs">
             <button data-act="deliverTo" data-arg="sell" class="${sim.deliverTo === 'sell' ? 'on' : ''}">Sell point</button>

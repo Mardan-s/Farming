@@ -37,6 +37,8 @@ A 3D farming game for mobile (PC later), seen from an angled top-down camera. It
 
 **Machines come alive.** Mounted implements lift on the hitch for the road and drop with a hydraulic hiss to work; tools unfold, spreader discs spin, the wagon tips its box to unload with grain pouring out the back. The combine's header drops to cut, its tank visibly fills and beeps when full, and the auger pours grain. Beacons flash on the job, exhaust puffs harder under load, the machine you drive pitches when accelerating and braking, and nearby machines rumble, crops rustle under the header and grain hisses as it pours.
 
+**Animals.** Open the Shop's **Animals** tab and build a **chicken coop**, **cow barn**, **pig sty** or **sheep pasture** (tap your land to place it; the grid shows green where it fits). Each comes with a few animals. They eat grain from your silo: tap the pen and press **Bring feed**, and a worker hitches a wagon, loads feed at the silo and tips it into the trough, or turn on **Auto-feed** and they'll do it whenever the trough runs low. You can also drive a wagon yourself: **Load feed** at the silo, then **Feed animals** at the pen's gate. Fed animals get happy, and happy animals produce more (eggs, milk, wool, piglets) and raise young. Sell produce from the pen or the Market's **Farm produce** section, where prices move daily. Hungry animals stop producing and get miserable. Animals wander, graze, peck, crowd the trough when it's empty, lie down at night and call out when you're close.
+
 Grow the farm: buy **land plots**, more **machines**, and **upgrades** (wider plows and seeders, bigger combine tanks and wagons, faster tractors). The **market** price for each crop changes daily. Store grain in the silo and sell when prices spike.
 
 Controls: drag to pan, pinch or scroll to zoom, twist two fingers (or use ⟲ ⟳) to rotate, and ⏩ to speed up time.
@@ -48,6 +50,7 @@ Controls: drag to pan, pinch or scroll to zoom, twist two fingers (or use ⟲ �
 - Glossy paint, chrome and glass use a small cube-map reflection on Lambert materials (dimmed at night, off in safe mode); corrugated steel, clapboard siding and shingles are canvas textures
 - Crops, weeds and meadow grass are individual instanced plants with a wind shader, batched per map chunk
 - Physical sky, tone mapping, sun shadows, drifting cloud shadows, soft contact shadows, distant mountain ridges, day/night with stars, moon, headlight beams and a yard lamp, rain, snow and lightning; a safe graphics mode turns on by itself if a shader fails
+- Animals are instanced, vertex-colored low-poly herds (one draw call per pen) with per-animal coats
 - World dressing: a pond with rippling water, reeds and lily pads, a spinning farm windmill, hay bales, power lines, bushes, rocks, wildflowers and birds
 - Static scenery and machine parts are baked into one mesh per material, keeping draw calls low on phones
 - Low/Medium/High graphics setting (in Settings)
@@ -72,5 +75,5 @@ npm run build      # typecheck + single-file build into dist/
 
 ## Roadmap ideas
 
-- Livestock, contracts and more machines
+- Contracts, more animals and more machines
 - Wrap for the iOS/Android stores (Capacitor) and PC (Electron/Steam)

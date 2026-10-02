@@ -197,6 +197,13 @@ export const sfx = {
   clunk: () => { tone(140, 0.08, 'square', 0.07, 0, 70); burst(3000, 0.08, 0.04, 'highpass', 0.02); },
   /** Grain tank full: two short beeps. */
   tankFull: () => { tone(1250, 0.09, 'square', 0.04); tone(1250, 0.09, 'square', 0.04, 0.16); },
+  /** Farm animal calls, synthesized. */
+  animal: (kind: string) => {
+    if (kind === 'cow') { tone(150, 0.9, 'sawtooth', 0.035, 0, 110); tone(152, 0.9, 'triangle', 0.03, 0, 108); }
+    else if (kind === 'sheep') { for (let i = 0; i < 5; i++) tone(420 + (i % 2) * 30, 0.12, 'sawtooth', 0.018, i * 0.1); }
+    else if (kind === 'pig') { tone(260, 0.12, 'square', 0.025, 0, 200); tone(240, 0.14, 'square', 0.025, 0.18, 170); burst(700, 0.2, 0.02); }
+    else { tone(900, 0.06, 'triangle', 0.03, 0, 1300); tone(880, 0.05, 'triangle', 0.025, 0.12, 1250); tone(860, 0.1, 'triangle', 0.025, 0.22, 600); }
+  },
   bump: () => { tone(90, 0.16, 'square', 0.08, 0, 55); tone(140, 0.08, 'triangle', 0.06); },
   cash: () => { tone(1320, 0.07, 'square', 0.04); tone(1760, 0.18, 'square', 0.04, 0.07); },
   corner: () => tone(900, 0.05, 'sine', 0.07),

@@ -21,6 +21,8 @@ import {
 import { buildCombine, buildRootHarvester, buildTool, buildTractor, setHeader } from './machines';
 import { setShineLight } from './shine';
 import { Particles } from './particles';
+import { PenView } from './animals';
+import { ANIMAL_DEFS } from '../game/animals';
 import { cloudUniforms } from './ground';
 import {
   Birds, blob, blobField, buildBales, buildHeadlights, buildLamp, buildMoon, buildMountains, buildPond, buildPowerLine,
@@ -46,6 +48,7 @@ const WORK_FX: Record<Exclude<Op, 'harvest'>, { color: number; size: [number, nu
   spray: { color: 0xcfe6ff, size: [0.15, 0.5], up: 0.1, life: 0.9, alpha: 0.35, n: 5 },
 };
 const FOV = 38;
+const cap = (t: string) => t[0].toUpperCase() + t.slice(1);
 /** The pond south of the road, near the farm. */
 const POND = { x: 25, z: 72.2, rx: 5.2, rz: 2.6 };
 
@@ -123,6 +126,10 @@ export class View3D implements ViewControls {
   private vViews = new Map<number, VehicleView>();
   private tViews = new Map<number, ToolModel>();
   private toolFx = new Map<number, ToolFx>();
+  private penViews = new Map<number, PenView>();
+  private penLabels = new THREE.Group();
+  private penSigs = new Map<number, string>();
+  private animalT = 4;
   private soundT = 0;
   private pickables: THREE.Object3D[] = [];
   private fieldGroup = new THREE.Group();
@@ -226,6 +233,9 @@ export class View3D implements ViewControls {
       if (f) this.paintFieldCell(f, i);
     });
     sim.events.on('fields', () => { this.syncFieldTiles(); this.redrawFields(); this.syncGrass(); });
+    sim.events.on('pens', () => this.syncPens());
+    this.scene.add(this.penLabels);
+    this.syncPens();
     sim.events.on('parcels', () => this.redrawParcels());
     sim.events.on('money', (x: number, y: number, amount: number) => this.moneyPopup(x, y, amount));
 
@@ -258,6 +268,11 @@ export class View3D implements ViewControls {
       return T.Road;
     }
     if (inRect(x, y, YARD) || inRect(x, y, ELEVATOR)) return T.Gravel;
+    const pen = this.sim.world.penIdAt(x, y);
+    if (pen >= 0) {
+      const kind = this.sim.pen(pen)?.kind;
+      return kind === 'chicken' ? T.Gravel : kind === 'pig' ? T.RolledH : T.Meadow;
+    }
     return T.Grass0 + (((x * 7 + y * 13) ^ (x * y)) & 3);
   }
 
@@ -321,6 +336,7 @@ export class View3D implements ViewControls {
   private fieldLabel(f: Field) { return `${f.id}|${this.fieldMarks(f).join(',')}`; }
 
   private sweepGrowth() {
+    if (this.sim.pens.some(p => this.penSigs.get(p.id) !== this.penMarks(p).join(','))) this.redrawPenLabels();
     let relabel = false;
     for (const f of this.sim.world.fields.values()) {
       const sig = this.fieldLabel(f);
@@ -341,7 +357,13 @@ export class View3D implements ViewControls {
 
   private syncGrass() {
     const w = this.sim.world;
-    this.crops.syncGrass((x, y) => w.fieldIdAt(x, y) < 0 && !w.blocked[y * MAP_W + x]);
+    this.crops.syncGrass((x, y) => {
+      if (w.fieldIdAt(x, y) >= 0 || w.blocked[y * MAP_W + x]) return false;
+      const pen = w.penIdAt(x, y);
+      if (pen < 0) return true;
+      const kind = this.sim.pen(pen)?.kind;
+      return kind === 'cow' || kind === 'sheep';
+    });
   }
 
   private buildSky() {
@@ -591,6 +613,44 @@ export class View3D implements ViewControls {
     }
   }
 
+  /** Builds and removes pen models, repaints their ground, and relabels them. */
+  private syncPens() {
+    for (const [id, v] of this.penViews) {
+      if (!this.sim.pens.some(p => p.id === id)) { v.group.removeFromParent(); this.penViews.delete(id); }
+    }
+    for (const p of this.sim.pens) {
+      if (this.penViews.has(p.id)) continue;
+      const v = new PenView(p);
+      this.penViews.set(p.id, v);
+      this.scene.add(v.group);
+    }
+    // Repaint every cell that is (or was) under a pen by repainting all non-field ground.
+    this.syncFieldTiles();
+    this.syncGrass();
+    this.redrawPenLabels();
+  }
+
+  private penMarks(p: (typeof this.sim.pens)[number]) {
+    const d = ANIMAL_DEFS[p.kind];
+    const marks: string[] = [];
+    if (p.food <= 0) marks.push('#a3402c'); // hungry
+    else if (p.food < d.trough * 0.2) marks.push('#a8731a'); // low on feed
+    if (p.stored >= Math.max(1, d.storage * 0.25)) marks.push('#3b6a34'); // produce to sell
+    return marks;
+  }
+
+  private redrawPenLabels() {
+    this.clearGroup(this.penLabels);
+    for (const p of this.sim.pens) {
+      const d = ANIMAL_DEFS[p.kind];
+      const marks = this.penMarks(p);
+      this.penSigs.set(p.id, marks.join(','));
+      const s = tagSprite(d.pen.split(' ')[1] ? cap(d.pen.split(' ')[1]) : d.pen, 1.05, { marks, accent: '#7a5634' });
+      s.position.set(p.x + d.w / 2, p.kind === 'cow' ? 3.9 : 2.9, p.y + 1.2);
+      this.penLabels.add(s);
+    }
+  }
+
   redrawFields() {
     this.clearGroup(this.fieldGroup);
     const sel = this.host.selectedField;
@@ -611,10 +671,10 @@ export class View3D implements ViewControls {
   }
 
   private updateDraft() {
-    const on = this.host.drawMode;
+    const on = this.host.drawMode || !!this.host.placing;
     this.grid.visible = on;
     const pts = this.host.draft;
-    const sig = on ? `${JSON.stringify(pts)}|${this.host.draftValid}|${this.host.draftCells.length}` : '';
+    const sig = on ? `${JSON.stringify(pts)}|${this.host.draftValid}|${this.host.draftCells.length}|${this.host.draftCells[0]?.x},${this.host.draftCells[0]?.y}` : '';
     if (sig === this.draftSig) {
       if (this.firstCorner) this.firstCorner.scale.setScalar(1 + Math.sin(this.time * 6) * 0.25);
       return;
@@ -688,17 +748,24 @@ export class View3D implements ViewControls {
   panTo(x: number, y: number) { this.panGoal = new THREE.Vector2(x, y); }
   private panGoal: THREE.Vector2 | null = null;
   private viewShift = 0;
+  private viewLift = 0;
 
-  /** Shifts the picture left while a side panel covers the right of the screen (landscape). */
+  /**
+   * Shifts the picture left while a side panel covers the right of the screen (landscape), or up
+   * while a bottom sheet covers what it's about (portrait).
+   */
   private updateViewShift(dt: number) {
     const w = window.innerWidth, h = window.innerHeight;
     const want = this.host.sideSheet ? (Math.min(400, w * 0.42) + 16) / 2 : 0;
-    this.viewShift += (want - this.viewShift) * Math.min(1, dt * 6);
-    if (Math.abs(this.viewShift) < 0.5) {
+    const lift = Math.min(h * 0.3, (this.host.bottomCover ?? 0) / 2);
+    const k = Math.min(1, dt * 6);
+    this.viewShift += (want - this.viewShift) * k;
+    this.viewLift += (lift - this.viewLift) * k;
+    if (Math.abs(this.viewShift) < 0.5 && Math.abs(this.viewLift) < 0.5) {
       if (this.camera.view?.enabled) this.camera.clearViewOffset();
       return;
     }
-    this.camera.setViewOffset(w, h, this.viewShift, 0, w, h);
+    this.camera.setViewOffset(w, h, this.viewShift, this.viewLift, w, h);
   }
 
   private groundAt(sx: number, sy: number): THREE.Vector3 | null {
@@ -808,6 +875,7 @@ export class View3D implements ViewControls {
       silo: pick === 'silo' || Math.hypot(cx - SILO_POS.x, cy - SILO_POS.y) < SILO_RADIUS,
       elevator: pick === 'elevator' || inRect(ix, iy, ELEVATOR),
       parcel: this.sim.world.parcelAt(ix, iy),
+      penId: this.sim.world.penIdAt(ix, iy),
       fieldId: this.sim.world.fieldIdAt(ix, iy),
     };
     this.host.onTap(info);
@@ -879,6 +947,8 @@ export class View3D implements ViewControls {
     this.updateEnvironment(dt);
     this.crops.tick(this.time);
     this.updateDressing(dt);
+    for (const v of this.penViews.values()) v.update(dt, this.time, this.night);
+    this.animalCalls(dt);
     this.updatePopups(dt);
     this.particles.update(dt);
     this.renderer.render(this.scene, this.camera);
@@ -901,6 +971,17 @@ export class View3D implements ViewControls {
     this.rotor.rotation.x -= dt * (w === 'storm' ? 6 : w === 'rain' ? 3.5 : 1.8);
     this.birds.update(this.time, this.night < 0.4 && w !== 'rain' && w !== 'storm' && this.snow < 0.5);
     this.lamp.set(this.night);
+  }
+
+  /** Now and then, an animal near the camera moos, clucks, oinks or baas. */
+  private animalCalls(dt: number) {
+    this.animalT -= dt;
+    if (this.animalT > 0) return;
+    this.animalT = 3 + Math.random() * 6;
+    if (this.night > 0.7) return;
+    const near = this.sim.pens.filter(p => p.animals > 0 && this.near(p.x + ANIMAL_DEFS[p.kind].w / 2, p.y + ANIMAL_DEFS[p.kind].h / 2, 22));
+    const p = near[Math.floor(Math.random() * near.length)];
+    if (p) sfx.animal(p.kind);
   }
 
   /** Grain pouring, crops being cut, and the rumble of working machines near the camera. */
