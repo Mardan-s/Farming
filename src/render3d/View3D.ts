@@ -22,6 +22,7 @@ import { buildCombine, buildRootHarvester, buildTool, buildTractor, setHeader } 
 import { setShineLight } from './shine';
 import { Particles } from './particles';
 import { PenView } from './animals';
+import { guard } from '../guard';
 import { ANIMAL_DEFS } from '../game/animals';
 import { cloudUniforms } from './ground';
 import {
@@ -233,9 +234,9 @@ export class View3D implements ViewControls {
       if (f) this.paintFieldCell(f, i);
     });
     sim.events.on('fields', () => { this.syncFieldTiles(); this.redrawFields(); this.syncGrass(); });
-    sim.events.on('pens', () => this.syncPens());
+    sim.events.on('pens', () => guard('pens', () => this.syncPens()));
     this.scene.add(this.penLabels);
-    this.syncPens();
+    guard('pens', () => this.syncPens());
     sim.events.on('parcels', () => this.redrawParcels());
     sim.events.on('money', (x: number, y: number, amount: number) => this.moneyPopup(x, y, amount));
 
@@ -253,7 +254,7 @@ export class View3D implements ViewControls {
     const loop = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.1);
       last = now;
-      this.frame(dt);
+      guard('frame', () => this.frame(dt));
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
@@ -894,9 +895,9 @@ export class View3D implements ViewControls {
 
   private frame(dt: number) {
     this.time += dt;
-    this.sim.update(dt);
+    guard('farm', () => this.sim.update(dt));
     this.sweepT += dt;
-    if (this.sweepT > 0.3) { this.sweepT = 0; this.sweepGrowth(); }
+    if (this.sweepT > 0.3) { this.sweepT = 0; guard('crops', () => this.sweepGrowth()); }
     this.flushT += dt;
     if (this.flushT > 0.06) { this.flushT = 0; this.ground.flush(); }
     if (this.lastSel !== this.host.selectedField) this.redrawFields();
@@ -934,25 +935,20 @@ export class View3D implements ViewControls {
       this.target.z += (this.panGoal.y - this.target.z) * k;
       if (Math.hypot(this.panGoal.x - this.target.x, this.panGoal.y - this.target.z) < 0.05 || this.drag?.moved || driven) this.panGoal = null;
     }
-    this.updateViewShift(dt);
+    guard('camera shift', () => this.updateViewShift(dt));
     this.updateCamera();
     this.frameDt = dt;
-    this.syncTools();
-    this.syncVehicles(dt);
-    this.updateMachineSounds(dt);
-    this.updateSelection();
-    this.updateDraft();
-    this.updateWeather(dt);
-    this.updateLighting();
-    this.updateEnvironment(dt);
-    this.crops.tick(this.time);
-    this.updateDressing(dt);
-    for (const v of this.penViews.values()) v.update(dt, this.time, this.night);
-    this.animalCalls(dt);
-    this.updatePopups(dt);
-    this.particles.update(dt);
-    this.renderer.render(this.scene, this.camera);
-    this.host.frame(dt);
+    guard('machines', () => { this.syncTools(); this.syncVehicles(dt); this.updateMachineSounds(dt); });
+    guard('selection', () => { this.updateSelection(); this.updateDraft(); });
+    guard('weather', () => { this.updateWeather(dt); this.updateLighting(); this.updateEnvironment(dt); });
+    guard('scenery', () => { this.crops.tick(this.time); this.updateDressing(dt); });
+    guard('animal models', () => {
+      for (const v of this.penViews.values()) v.update(dt, this.time, this.night);
+      this.animalCalls(dt);
+    });
+    guard('effects', () => { this.updatePopups(dt); this.particles.update(dt); });
+    guard('render', () => this.renderer.render(this.scene, this.camera));
+    guard('panel', () => this.host.frame(dt));
   }
 
   private updateDressing(dt: number) {

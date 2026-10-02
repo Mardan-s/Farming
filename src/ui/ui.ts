@@ -1,3 +1,4 @@
+import { onGuardError } from '../guard';
 import {
   CROPS, CROP_DEFS, FUEL_CAP, LOAN_DAILY_RATE, LOAN_MAX, LOAN_STEP, OP_DEFS, SEASON_NAMES, SHOP_ITEMS, SILO_CAP, SPEEDS,
   UPGRADES, WAGE_PER_SEC, WEATHER_DEFS, parcelPrice,
@@ -107,6 +108,10 @@ export class UI implements ViewHost {
 
   attach(view: ViewControls) {
     this.view = view;
+    onGuardError((where, err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.toast(`Something broke (${where}: ${msg.slice(0, 90)}). The game kept running. Please send a screenshot of this.`, 'bad', undefined, 12000);
+    });
     if (isSafeMode()) setTimeout(() => this.toast('Simple graphics are on because your phone couldn\u2019t run the full effects. You can retry in Settings.', 'info', 'quality'), 1500);
   }
 
@@ -1495,7 +1500,7 @@ export class UI implements ViewHost {
     return `<svg class="spark" viewBox="0 0 60 24"><line x1="0" x2="60" y1="${by}" y2="${by}" class="base"/><polyline points="${pts}"/></svg>`;
   }
 
-  toast(msg: string, kind = 'info', ico?: string) {
+  toast(msg: string, kind = 'info', ico?: string, ms = 3200) {
     const box = $('#toasts');
     const el = document.createElement('div');
     el.className = `toast ${kind}`;
@@ -1503,8 +1508,8 @@ export class UI implements ViewHost {
     el.querySelector('span')!.textContent = stripEmoji(msg);
     box.appendChild(el);
     while (box.children.length > 2) box.firstElementChild!.remove();
-    setTimeout(() => el.classList.add('out'), 3200);
-    setTimeout(() => el.remove(), 3700);
+    setTimeout(() => el.classList.add('out'), ms);
+    setTimeout(() => el.remove(), ms + 500);
   }
 
   showWelcome() { this.openModal('welcome'); }

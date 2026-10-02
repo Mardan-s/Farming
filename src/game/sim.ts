@@ -11,6 +11,7 @@ import {
 import {
   ANIMAL_DEFS, PRODUCTS, PRODUCT_DEFS, dailyFeed, feedPoint, penRect, tickPen, type AnimalKind, type Pen, type Product,
 } from './animals';
+import { guard } from '../guard';
 import { planPasses, type Axis } from './coverage';
 import { blockedAt, findPath, isRoad } from './path';
 import { CellState, Field, READY_STAGE, Weeds, type FieldSave } from './field';
@@ -346,7 +347,7 @@ export class Game {
     if (this.day !== prevDay) this.newDay();
     if (this.season !== prevSeason) this.events.emit('season', this.season);
     if (this.clock >= this.weatherChangeAt) this.advanceWeather();
-    this.tickPens(mins);
+    guard('animals', () => this.tickPens(mins));
     this.wetness = Math.min(1, Math.max(0, this.wetness + WET_RATE[this.weather] * mins * (this.weather === 'sun' && !this.isDaytime ? 0.4 : 1)));
 
     for (const v of this.vehicles) { v.moving = false; v.working = null; v.unloadingTo = null; v.waiting = false; }
@@ -361,7 +362,7 @@ export class Game {
     if (this.tick >= 1) {
       this.tick = 0;
       this.dispatchUnloaders();
-      this.autoFeedPens();
+      guard('auto-feed', () => this.autoFeedPens());
       this.growWeeds();
       this.stormDamage();
       this.checkGoals();
@@ -476,14 +477,7 @@ export class Game {
         this.events.emit('toast', `📈 ${CROP_DEFS[c].name} is selling high today: $${this.prices[c]} per 1,000 L`, 'good');
       }
     }
-    for (const p of PRODUCTS) {
-      const base = PRODUCT_DEFS[p].basePrice;
-      let v = this.productPrices[p];
-      v = v * (1 + gauss() * 0.05) + (base - v) * 0.15;
-      this.productPrices[p] = Math.round(Math.min(base * 1.5, Math.max(base * 0.65, v)) * 100) / 100;
-      this.productHistory[p].push(this.productPrices[p]);
-      if (this.productHistory[p].length > 14) this.productHistory[p].shift();
-    }
+    guard('produce prices', () => this.driftProductPrices());
     this.events.emit('day', this.day);
   }
 
@@ -1607,6 +1601,17 @@ export class Game {
   // ---------- economy ----------
 
   // ---------- animals ----------
+
+  private driftProductPrices() {
+    for (const p of PRODUCTS) {
+      const base = PRODUCT_DEFS[p].basePrice;
+      let v = this.productPrices[p];
+      v = v * (1 + gauss() * 0.05) + (base - v) * 0.15;
+      this.productPrices[p] = Math.round(Math.min(base * 1.5, Math.max(base * 0.65, v)) * 100) / 100;
+      (this.productHistory[p] ??= []).push(this.productPrices[p]);
+      if (this.productHistory[p].length > 14) this.productHistory[p].shift();
+    }
+  }
 
   pen(id: number) { return this.pens.find(p => p.id === id); }
 
