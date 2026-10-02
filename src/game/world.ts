@@ -1,6 +1,7 @@
 import {
   ELEVATOR, MAP_H, MAP_W, PARCEL_COLS, PARCEL_H, PARCEL_ORIGIN, PARCEL_ROWS, PARCEL_W, ROAD, YARD, type Rect,
 } from './config';
+import { ANIMAL_DEFS, feedPoint, type AnimalKind, type Pen } from './animals';
 import { Field } from './field';
 import { isSimplePolygon, rasterize, type Pt } from './geometry';
 
@@ -23,6 +24,8 @@ export class World {
   readonly fieldAt = new Int16Array(MAP_W * MAP_H).fill(-1);
   readonly fieldCellIdx = new Int32Array(MAP_W * MAP_H).fill(-1);
   readonly fields = new Map<number, Field>();
+  /** Pen id on each cell, or -1. */
+  readonly penAt = new Int16Array(MAP_W * MAP_H).fill(-1);
 
   constructor() {
     for (let i = 0; i < PARCEL_COUNT; i++) {
@@ -60,6 +63,39 @@ export class World {
     this.fields.delete(id);
   }
 
+  penIdAt(x: number, y: number) { return this.inBounds(x, y) ? this.penAt[y * MAP_W + x] : -1; }
+
+  addPen(p: Pen) {
+    const d = ANIMAL_DEFS[p.kind];
+    for (let y = p.y; y < p.y + d.h; y++) for (let x = p.x; x < p.x + d.w; x++) this.penAt[y * MAP_W + x] = p.id;
+  }
+
+  removePen(p: Pen) {
+    const d = ANIMAL_DEFS[p.kind];
+    for (let y = p.y; y < p.y + d.h; y++) for (let x = p.x; x < p.x + d.w; x++) this.penAt[y * MAP_W + x] = -1;
+  }
+
+  /** Can a pen of this kind go with its top-left corner at (x, y)? */
+  validatePen(kind: AnimalKind, x: number, y: number, owned: Set<number>): { ok: boolean; reason?: string } {
+    const d = ANIMAL_DEFS[kind];
+    for (let cy = y; cy < y + d.h; cy++) {
+      for (let cx = x; cx < x + d.w; cx++) {
+        if (!this.inBounds(cx, cy)) return { ok: false, reason: 'Outside the map' };
+        const k = cy * MAP_W + cx;
+        if (this.blocked[k]) return { ok: false, reason: 'Overlaps the farmyard or road' };
+        if (!owned.has(this.parcelOf[k])) return { ok: false, reason: 'You don\u2019t own all of this land' };
+        if (this.fieldAt[k] >= 0) return { ok: false, reason: 'Overlaps a field' };
+        if (this.penAt[k] >= 0) return { ok: false, reason: 'Overlaps another pen' };
+      }
+    }
+    const f = feedPoint({ kind, x, y } as Pen);
+    const fx = Math.floor(f.x), fy = Math.floor(f.y);
+    if (!this.inBounds(fx, fy)) return { ok: false, reason: 'Leave room in front for the feed wagon' };
+    const k = fy * MAP_W + fx;
+    if (this.fieldAt[k] >= 0 || this.penAt[k] >= 0) return { ok: false, reason: 'Leave room in front for the feed wagon' };
+    return { ok: true };
+  }
+
   /** Checks a candidate outline against ownership, obstacles and other fields. */
   validateOutline(poly: Pt[], owned: Set<number>): { ok: boolean; reason?: string; cells: Pt[] } {
     if (poly.length < 4) return { ok: false, reason: `Add ${4 - poly.length} more corner${poly.length === 3 ? '' : 's'}`, cells: [] };
@@ -72,6 +108,7 @@ export class World {
       if (this.blocked[k]) return { ok: false, reason: 'Overlaps the farmyard or road', cells };
       if (!owned.has(this.parcelOf[k])) return { ok: false, reason: 'You don’t own all of this land', cells };
       if (this.fieldAt[k] >= 0) return { ok: false, reason: 'Overlaps another field', cells };
+      if (this.penAt[k] >= 0) return { ok: false, reason: 'Overlaps an animal pen', cells };
     }
     return { ok: true, cells };
   }

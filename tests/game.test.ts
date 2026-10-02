@@ -495,3 +495,113 @@ describe('pathfinding', () => {
     expect(pts.some(p => game.world.fieldIdAt(Math.floor(p.x), Math.floor(p.y)) >= 0)).toBe(false);
   });
 });
+
+describe('animals', () => {
+  const COOP = { x: 18, y: 45 }; // inside the starting plot, right of the farmyard
+
+  it('builds a pen on owned, open land only', () => {
+    const game = new Game();
+    game.money = 1e6;
+    expect(game.buildPen('chicken', 40, 45)).toMatch(/own/);
+    expect(game.buildPen('chicken', 6, 48)).toMatch(/farmyard/);
+    expect(game.buildPen('chicken', COOP.x, COOP.y)).toBeNull();
+    expect(game.buildPen('cow', COOP.x + 2, COOP.y + 1)).toMatch(/another pen/);
+    // Fields can't overlap pens either.
+    expect(game.createField([{ x: 17, y: 46 }, { x: 24, y: 46 }, { x: 24, y: 50 }, { x: 17, y: 50 }])).toMatch(/pen/);
+    expect(game.pens[0].animals).toBe(10);
+  });
+
+  it('animals eat, produce while fed, stop when hungry, and breed when happy', () => {
+    const game = new Game();
+    game.money = 1e6;
+    game.buildPen('cow', COOP.x, COOP.y);
+    const pen = game.pens[0];
+    pen.happiness = 100;
+    const food = pen.food;
+    for (let i = 0; i < 200; i++) game.update(0.1);
+    expect(pen.food).toBeLessThan(food);
+    expect(pen.stored).toBeGreaterThan(0);
+    // Starve them: production stops and happiness falls.
+    pen.food = 0;
+    const stored = pen.stored;
+    for (let i = 0; i < 400; i++) game.update(0.1);
+    expect(pen.stored).toBeCloseTo(stored, 3);
+    expect(pen.happiness).toBeLessThan(99);
+    // Feed them well for a long while and a calf is born.
+    pen.food = 1e9; pen.happiness = 100;
+    const before = pen.animals;
+    game.clock += 1; // keep growth/weather sane
+    (game as unknown as { tickPens(m: number): void }).tickPens(20 * MINUTES_PER_DAY);
+    expect(pen.animals).toBeGreaterThan(before);
+    expect(game.stats.animalsBorn).toBeGreaterThan(0);
+  });
+
+  it('sells produce at the market price', () => {
+    const game = new Game();
+    game.money = 1e6;
+    game.buildPen('chicken', COOP.x, COOP.y);
+    const pen = game.pens[0];
+    pen.stored = 100;
+    const m = game.money;
+    const got = game.sellProduce(pen.id);
+    expect(got).toBeCloseTo(100 * game.productPrices.eggs, 5);
+    expect(game.money).toBeCloseTo(m + got, 5);
+    expect(pen.stored).toBeLessThan(1);
+  });
+
+  it('a worker hauls feed from the silo to the trough', () => {
+    const game = new Game();
+    game.money = 1e6;
+    game.buildPen('chicken', COOP.x, COOP.y);
+    const pen = game.pens[0];
+    pen.autoFeed = false;
+    pen.food = 0;
+    expect(game.orderFeed(pen.id)).toMatch(/No feed/);
+    game.silo.wheat = 5000;
+    expect(game.orderFeed(pen.id)).toBeNull();
+    expect(run(game, 400, () => pen.food > 500)).toBe(true);
+    expect(game.silo.wheat).toBeLessThan(5000);
+  });
+
+  it('you can load feed at the silo and tip it into a trough yourself', () => {
+    const game = new Game();
+    game.money = 1e6;
+    game.buildPen('chicken', COOP.x, COOP.y);
+    const pen = game.pens[0];
+    pen.food = 0;
+    game.silo.barley = 3000;
+    const t = game.vehicles[0];
+    const w = game.tools.find(x => x.kind === 'wagon')!;
+    game.startDriving(t.id);
+    w.attachedTo = t.id; t.toolId = w.id;
+    t.x = 10.2; t.y = 47.5;
+    expect(game.driveContext()!.load).toBe(true);
+    expect(game.driverLoad()).toBeNull();
+    run(game, 10);
+    expect(w.load.crop).toBe('barley');
+    const fp = { x: COOP.x + 3.5, y: COOP.y + 6.9 };
+    t.x = fp.x; t.y = fp.y;
+    expect(game.driveContext()!.feedPen).toBe(pen.id);
+    expect(game.driverFeed()).toBeNull();
+    run(game, 10);
+    expect(pen.food).toBeGreaterThan(100);
+  });
+
+  it('pens survive a save and block pathfinding', () => {
+    const game = new Game();
+    game.money = 1e6;
+    game.buildPen('pig', COOP.x, COOP.y);
+    const loaded = Game.load(JSON.parse(JSON.stringify(game.save()))).game;
+    expect(loaded.pens).toHaveLength(1);
+    expect(loaded.world.penIdAt(COOP.x + 1, COOP.y + 1)).toBe(loaded.pens[0].id);
+    const route = findPath(loaded.world, { x: COOP.x - 1, y: COOP.y + 3 }, { x: COOP.x + 10, y: COOP.y + 3 });
+    let a = { x: COOP.x - 1, y: COOP.y + 3 };
+    for (const b of route) {
+      for (let i = 1; i <= 20; i++) {
+        const x = a.x + (b.x - a.x) * (i / 20), y = a.y + (b.y - a.y) * (i / 20);
+        expect(loaded.world.penIdAt(Math.floor(x), Math.floor(y))).toBe(-1);
+      }
+      a = b;
+    }
+  });
+});

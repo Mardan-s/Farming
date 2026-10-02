@@ -10,13 +10,16 @@ export interface Stats {
   fields: number;
   vehiclesBought: number;
   drivenCells: number;
+  pens: number;
+  animalsBorn: number;
+  produceEarned: number;
   fertilized: number;
   limed: number;
   weeded: number;
 }
 
 export function newStats(): Stats {
-  return { plowed: 0, seeded: 0, harvested: 0, soldLiters: 0, earned: 0, cropsHarvested: [], upgrades: 0, parcels: 1, fields: 0, vehiclesBought: 0, drivenCells: 0, fertilized: 0, limed: 0, weeded: 0 };
+  return { plowed: 0, seeded: 0, harvested: 0, soldLiters: 0, earned: 0, cropsHarvested: [], upgrades: 0, parcels: 1, fields: 0, vehiclesBought: 0, drivenCells: 0, pens: 0, animalsBorn: 0, produceEarned: 0, fertilized: 0, limed: 0, weeded: 0 };
 }
 
 export interface Goal {
@@ -40,5 +43,8 @@ export const GOALS: Goal[] = [
   { title: 'Fertilize a field', hint: 'Buy a spreader. Two fertilizer passes give +30% yield.', reward: 2000, progress: s => [Math.min(s.fertilized, 60), 60] },
   { title: 'Deal with weeds', hint: 'Weeds cost 25% yield. Use a weeder on young crops or a sprayer.', reward: 2000, progress: s => [Math.min(s.weeded, 60), 60] },
   { title: 'Grow a root crop', hint: 'Potatoes and sugar beets need a root planter and root harvester.', reward: 8000, progress: s => [s.cropsHarvested.some(c => c === 'potato' || c === 'sugarbeet') ? 1 : 0, 1] },
+  { title: 'Raise some animals', hint: 'Shop \u2192 Animals. Build a chicken coop on your land; they eat grain from the silo.', reward: 3000, progress: s => [Math.min(s.pens, 1), 1] },
+  { title: 'Sell farm produce', hint: 'Tap a pen and sell its eggs, milk, wool or piglets.', reward: 4000, progress: s => [Math.min(Math.round(s.produceEarned), 2000), 2000] },
+  { title: 'A growing herd', hint: 'Keep animals fed and happy and they raise young.', reward: 6000, progress: s => [Math.min(s.animalsBorn, 10), 10] },
   { title: 'Earn $100,000', hint: 'Watch the market — sell when prices are high.', reward: 10000, progress: s => [Math.min(s.earned, 100000), 100000] },
 ];

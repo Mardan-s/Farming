@@ -53,18 +53,19 @@ let staticCost: Uint8Array | null = null;
 
 function costAt(world: World, k: number, destField: number) {
   const c = staticCost![k];
-  if (c === BLOCKED) return BLOCKED;
+  if (c === BLOCKED || world.penAt[k] >= 0) return BLOCKED;
   const f = world.fieldAt[k];
   if (f >= 0) return f === destField ? COST_DEST_FIELD : COST_FIELD;
   return c;
 }
 
 /** True where a machine can't go: buildings, the yard fence, the woods and the map edge. */
-export function blockedAt(x: number, y: number) {
+export function blockedAt(x: number, y: number, world?: World) {
   staticCost ??= buildStatic();
   const cx = Math.floor(x), cy = Math.floor(y);
   if (cx < 0 || cy < 0 || cx >= MAP_W || cy >= MAP_H) return true;
-  return staticCost[cy * MAP_W + cx] === BLOCKED;
+  const k = cy * MAP_W + cx;
+  return staticCost[k] === BLOCKED || (!!world && world.penAt[k] >= 0);
 }
 
 export function isRoad(x: number, y: number) {

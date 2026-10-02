@@ -8,6 +8,9 @@ import {
   REPAIR_COST_PER_PCT, SEASONS, SEASON_DAYS, SEASON_NAMES, STORM_CHANCE, WAGE_PER_SEC, WEAR_PER_SEC, WET_LIMIT, WET_RATE,
   type CropId, type Op, type Season, type ToolKind, type UpgradeId, type VehicleKind, type Weather,
 } from './config';
+import {
+  ANIMAL_DEFS, PRODUCTS, PRODUCT_DEFS, dailyFeed, feedPoint, penRect, tickPen, type AnimalKind, type Pen, type Product,
+} from './animals';
 import { planPasses, type Axis } from './coverage';
 import { blockedAt, findPath, isRoad } from './path';
 import { CellState, Field, READY_STAGE, Weeds, type FieldSave } from './field';
@@ -33,7 +36,8 @@ export type Step =
   | { t: 'waitTool'; toolId: number }
   | { t: 'work'; op: Op; fieldId: number; crop?: CropId; level?: number; path?: Waypoint[]; idx?: number; rounds?: number; abort?: boolean }
   | { t: 'follow'; combineId: number }
-  | { t: 'unload'; dest: Dest; earned?: number }
+  | { t: 'unload'; dest: Dest; earned?: number; penId?: number }
+  | { t: 'load'; penId: number }
   | { t: 'refuel' }
   | { t: 'handover'; fieldId: number; op: Op; crop?: CropId; heading: number };
 
@@ -50,6 +54,9 @@ export interface DriveContext {
   refuel: boolean;
   hitch: 'unhitch' | 'hitch' | null;
   hitchName: string;
+  /** A pen whose trough you can tip this wagon into, and whether you can load feed at the silo. */
+  feedPen: number | null;
+  load: boolean;
 }
 
 export interface Vehicle {
@@ -165,6 +172,11 @@ export class Game {
   stats: Stats = newStats();
   goalIdx = 0;
   deliverTo: Dest = 'sell';
+  pens: Pen[] = [];
+  productPrices: Record<Product, number> = Object.fromEntries(PRODUCTS.map(p => [p, PRODUCT_DEFS[p].basePrice])) as Record<Product, number>;
+  productHistory: Record<Product, number[]> = Object.fromEntries(PRODUCTS.map(p => [p, [PRODUCT_DEFS[p].basePrice]])) as Record<Product, number[]>;
+  private nextPenId = 1;
+  private feedWarned = new Map<number, number>();
   /** Crops the player wants a message about when their price is high. */
   priceAlerts: CropId[] = [];
   muted = false;
@@ -334,6 +346,7 @@ export class Game {
     if (this.day !== prevDay) this.newDay();
     if (this.season !== prevSeason) this.events.emit('season', this.season);
     if (this.clock >= this.weatherChangeAt) this.advanceWeather();
+    this.tickPens(mins);
     this.wetness = Math.min(1, Math.max(0, this.wetness + WET_RATE[this.weather] * mins * (this.weather === 'sun' && !this.isDaytime ? 0.4 : 1)));
 
     for (const v of this.vehicles) { v.moving = false; v.working = null; v.unloadingTo = null; v.waiting = false; }
@@ -348,6 +361,7 @@ export class Game {
     if (this.tick >= 1) {
       this.tick = 0;
       this.dispatchUnloaders();
+      this.autoFeedPens();
       this.growWeeds();
       this.stormDamage();
       this.checkGoals();
@@ -462,6 +476,14 @@ export class Game {
         this.events.emit('toast', `📈 ${CROP_DEFS[c].name} is selling high today: $${this.prices[c]} per 1,000 L`, 'good');
       }
     }
+    for (const p of PRODUCTS) {
+      const base = PRODUCT_DEFS[p].basePrice;
+      let v = this.productPrices[p];
+      v = v * (1 + gauss() * 0.05) + (base - v) * 0.15;
+      this.productPrices[p] = Math.round(Math.min(base * 1.5, Math.max(base * 0.65, v)) * 100) / 100;
+      this.productHistory[p].push(this.productPrices[p]);
+      if (this.productHistory[p].length > 14) this.productHistory[p].shift();
+    }
     this.events.emit('day', this.day);
   }
 
@@ -528,8 +550,33 @@ export class Game {
       case 'follow': this.stepFollow(v, step, dt); break;
       case 'unload': this.stepUnload(v, step, dt); break;
       case 'refuel': this.stepRefuel(v, dt); break;
+      case 'load': this.stepLoad(v, step, dt); break;
       case 'handover': this.stepHandover(v, step, dt); break;
     }
+  }
+
+  /** Fills the wagon with feed at the silo (penId -1: whatever you're driving, from the biggest pile). */
+  private stepLoad(v: Vehicle, s: Extract<Step, { t: 'load' }>, dt: number) {
+    const info = this.cargoOf(v);
+    const wagon = this.toolOf(v);
+    if (!info || wagon?.kind !== 'wagon') { v.steps.shift(); return; }
+    const pen = s.penId >= 0 ? this.pen(s.penId) : undefined;
+    const diet = pen ? ANIMAL_DEFS[pen.kind].diet : CROPS;
+    let crop = info.cargo.amount > 0 ? info.cargo.crop : null;
+    if (!crop) crop = diet.slice().sort((a, b) => this.silo[b] - this.silo[a])[0] ?? null;
+    const want = pen ? Math.min(info.cap, ANIMAL_DEFS[pen.kind].trough - pen.food) : info.cap;
+    if (!crop || !diet.includes(crop) || this.silo[crop] <= 0.5 || info.cargo.amount >= want - 1) {
+      if (info.cargo.amount <= 0 && pen) {
+        this.events.emit('toast', `No feed for the ${ANIMAL_DEFS[pen.kind].plural.toLowerCase()} in the silo`, 'bad');
+        v.steps = [{ t: 'park' }];
+      } else v.steps.shift();
+      return;
+    }
+    const amt = Math.min(UNLOAD_RATE * 1.5 * dt, this.silo[crop], want - info.cargo.amount);
+    this.silo[crop] -= amt;
+    info.cargo.crop = crop;
+    info.cargo.amount += amt;
+    v.status = `Loading ${CROP_DEFS[crop].name.toLowerCase()} at the silo`;
   }
 
   private stepRefuel(v: Vehicle, dt: number) {
@@ -816,6 +863,25 @@ export class Game {
     if (!info || info.cargo.amount <= 0 || !info.cargo.crop) { finish(); return; }
     const crop = info.cargo.crop;
     let amt = Math.min(UNLOAD_RATE * 1.5 * dt, info.cargo.amount);
+    if (s.penId != null) {
+      // Tipping feed into an animal trough.
+      const pen = this.pen(s.penId);
+      const d = pen && ANIMAL_DEFS[pen.kind];
+      if (!pen || !d) { finish(); return; }
+      if (!d.diet.includes(crop)) {
+        this.events.emit('toast', `${d.plural} don't eat ${CROP_DEFS[crop].name.toLowerCase()}`, 'bad');
+        finish();
+        return;
+      }
+      const space = d.trough - pen.food;
+      if (space <= 0.5) { finish(); return; }
+      amt = Math.min(amt, space);
+      pen.food += amt;
+      v.status = `Filling the ${d.pen.toLowerCase()} trough`;
+      info.cargo.amount -= amt;
+      if (info.cargo.amount <= 0.01) { info.cargo.amount = 0; info.cargo.crop = null; finish(); }
+      return;
+    }
     if (s.dest === 'silo') {
       const space = SILO_CAP - this.silo[crop];
       if (space <= 0) {
@@ -1065,7 +1131,7 @@ export class Game {
     const reach = isHarvester(v) ? 1.3 : 0.85;
     const start = { x: a.x - dx * back, y: a.y - dy * back };
     // Never hand over parked in a fence or hedge: roll forward until the spot and the bumper are clear.
-    for (let i = 0; i < 20 && (blockedAt(start.x, start.y) || blockedAt(start.x + dx * reach, start.y + dy * reach)); i++) {
+    for (let i = 0; i < 20 && (blockedAt(start.x, start.y, this.world) || blockedAt(start.x + dx * reach, start.y + dy * reach, this.world)); i++) {
       start.x += dx * 0.25;
       start.y += dy * 0.25;
     }
@@ -1305,7 +1371,17 @@ export class Game {
     const nearTool = v.kind === 'tractor' && !tool ? this.hitchableTool(v) : undefined;
     let opLabel = op ? OP_DEFS[op].name : '';
     if (op === 'seed') opLabel = `Plant ${CROP_DEFS[this.driveSeedCrop(v)].name.toLowerCase()}`;
+    let feedPen: number | null = null;
+    let load = false;
+    if (tool?.kind === 'wagon' && cargo) {
+      const crop = cargo.cargo.crop;
+      const pen = this.pens.find(p => near(feedPoint(p), 3.2));
+      if (pen && crop && cargo.cargo.amount > 0 && ANIMAL_DEFS[pen.kind].diet.includes(crop)) feedPen = pen.id;
+      load = near(SILO_UNLOAD, 4) && cargo.cargo.amount < cargo.cap - 1 && (crop ? this.silo[crop] > 0.5 : CROPS.some(c => this.silo[c] > 0.5));
+      if (load) unload = null;
+    }
     return {
+      feedPen, load,
       op, opLabel, lowered: this.implDown,
       unload,
       refuel: near(PUMP, 3.2) && v.fuel < FUEL_CAP[v.kind] - 1,
@@ -1356,6 +1432,23 @@ export class Game {
     return null;
   }
 
+  driverFeed(): string | null {
+    const v = this.driven;
+    const penId = this.driveContext()?.feedPen;
+    if (!v || penId == null) return 'Drive a wagon of feed to the front of a pen';
+    v.speed = 0;
+    v.steps = [{ t: 'unload', dest: 'silo', penId }];
+    return null;
+  }
+
+  driverLoad(): string | null {
+    const v = this.driven;
+    if (!v || !this.driveContext()?.load) return 'Drive a wagon to the silo';
+    v.speed = 0;
+    v.steps = [{ t: 'load', penId: -1 }];
+    return null;
+  }
+
   driverRefuel(): string | null {
     const v = this.driven;
     if (!v || !this.driveContext()?.refuel) return 'Drive to the fuel pump';
@@ -1368,6 +1461,7 @@ export class Game {
     const step = v.steps[0];
     if (step?.t === 'unload') { this.stepUnload(v, step, dt); return; }
     if (step?.t === 'refuel') { this.stepRefuel(v, dt); return; }
+    if (step?.t === 'load') { this.stepLoad(v, step, dt); return; }
     v.steps = [];
     const op = this.implDown ? this.driveOp(v) : null;
     const factor = isHarvester(v) ? COMBINE_WORK_FACTOR : WORK_SPEED_FACTOR;
@@ -1387,7 +1481,7 @@ export class Game {
     const reach = (isHarvester(v) ? 1.3 : 0.85) * Math.sign(v.speed);
     const fx = nx + Math.cos(v.heading) * reach, fy = ny + Math.sin(v.heading) * reach;
     const px = -Math.sin(v.heading) * 0.4, py = Math.cos(v.heading) * 0.4;
-    const hit = (x: number, y: number) => blockedAt(x + px, y + py) || blockedAt(x - px, y - py) || blockedAt(x, y);
+    const hit = (x: number, y: number) => blockedAt(x + px, y + py, this.world) || blockedAt(x - px, y - py, this.world) || blockedAt(x, y, this.world);
     // A machine already touching an obstacle may always move away from it.
     const stuck = hit(v.x + Math.cos(v.heading) * reach, v.y + Math.sin(v.heading) * reach);
     if (!stuck && hit(fx, fy)) {
@@ -1512,6 +1606,146 @@ export class Game {
 
   // ---------- economy ----------
 
+  // ---------- animals ----------
+
+  pen(id: number) { return this.pens.find(p => p.id === id); }
+
+  private tickPens(minutes: number) {
+    for (const p of this.pens) {
+      tickPen(p, minutes, {
+        born: (pen, n) => {
+          this.stats.animalsBorn += n;
+          const d = ANIMAL_DEFS[pen.kind];
+          const baby = { chicken: 'chick', cow: 'calf', pig: 'piglet', sheep: 'lamb' }[pen.kind];
+          this.events.emit('toast', n === 1 ? `🍼 A ${baby} was born in the ${d.pen.toLowerCase()}!` : `🍼 ${n} new ${d.plural.toLowerCase()} in the ${d.pen.toLowerCase()}!`, 'good');
+          this.events.emit('born', pen.id);
+        },
+        hungry: pen => this.events.emit('toast', `${ANIMAL_DEFS[pen.kind].plural} are out of feed and stopped producing. Bring feed from the silo.`, 'bad'),
+      });
+    }
+  }
+
+  /** Is there anything in the silo these animals eat? */
+  feedInSilo(kind: AnimalKind) {
+    return ANIMAL_DEFS[kind].diet.reduce((sum, c) => sum + this.silo[c], 0);
+  }
+
+  private feedRunFor(penId: number) {
+    return this.vehicles.find(v => v.steps.some(st => (st.t === 'load' && st.penId === penId) || (st.t === 'unload' && st.penId === penId)));
+  }
+
+  /** Workers top up troughs that run low, if the silo has feed. */
+  private autoFeedPens() {
+    for (const p of this.pens) {
+      const d = ANIMAL_DEFS[p.kind];
+      if (!p.autoFeed || p.animals <= 0 || p.food > d.trough * 0.3 || this.feedRunFor(p.id)) continue;
+      if (this.feedInSilo(p.kind) < 1) {
+        if (this.feedWarned.get(p.id) !== this.day && p.food < d.trough * 0.1) {
+          this.feedWarned.set(p.id, this.day);
+          this.events.emit('toast', `The ${d.pen.toLowerCase()} is low on feed and the silo has none. Store ${d.diet.slice(0, 3).map(c => CROP_DEFS[c].name.toLowerCase()).join(', ')} or similar.`, 'bad');
+        }
+        continue;
+      }
+      if (!this.orderFeed(p.id)) this.events.emit('toast', `🚜 A worker is bringing feed to the ${d.pen.toLowerCase()}`, 'info');
+    }
+  }
+
+  /** Sends a tractor and wagon: load feed at the silo, tip it into the pen's trough. */
+  orderFeed(penId: number, vid?: number): string | null {
+    const pen = this.pen(penId);
+    if (!pen) return 'Not available';
+    const d = ANIMAL_DEFS[pen.kind];
+    if (this.feedRunFor(penId)) return 'Feed is already on its way';
+    if (d.trough - pen.food < 1) return 'The trough is full';
+    if (this.feedInSilo(pen.kind) < 1) return `No feed in the silo: ${d.plural.toLowerCase()} eat ${d.diet.map(c => CROP_DEFS[c].name.toLowerCase()).join(', ')}`;
+    const fp = feedPoint(pen);
+    const candidates = vid != null ? [this.vehicle(vid)!] : this.vehicles
+      .filter(v => v.kind === 'tractor' && this.isIdle(v))
+      .filter(v => this.toolOf(v)?.kind === 'wagon' || this.tools.some(w => w.kind === 'wagon' && w.attachedTo == null && w.reservedBy == null))
+      .sort((a, b) => (this.toolOf(a)?.kind === 'wagon' ? 0 : 50) + dist(a, fp) - ((this.toolOf(b)?.kind === 'wagon' ? 0 : 50) + dist(b, fp)));
+    const v = candidates[0];
+    if (!v) return 'All tractors are busy (or no free wagon)';
+    const pre: Step[] = [];
+    const cur = this.toolOf(v);
+    if (cur?.kind === 'wagon' && cur.load.amount > 0 && cur.load.crop && !d.diet.includes(cur.load.crop)) pre.push(...this.deliverSteps('silo'));
+    const check = this.ensureTool(v, 'wagon', false);
+    if (typeof check === 'string') return check;
+    this.cancel(v);
+    const hitch = this.ensureTool(v, 'wagon', true) as Step[];
+    v.steps = [
+      ...this.fuelSteps(v, 0.12), ...pre, ...hitch,
+      { t: 'goto', x: SILO_UNLOAD.x, y: SILO_UNLOAD.y }, { t: 'load', penId },
+      { t: 'goto', x: fp.x, y: fp.y }, { t: 'unload', dest: 'silo', penId }, { t: 'park' },
+    ];
+    return null;
+  }
+
+  buildPen(kind: AnimalKind, x: number, y: number): string | null {
+    const d = ANIMAL_DEFS[kind];
+    const check = this.world.validatePen(kind, x, y, this.owned);
+    if (!check.ok) return check.reason ?? 'Can\u2019t build here';
+    if (this.money < d.penCost) return 'Not enough money';
+    this.money -= d.penCost;
+    const pen: Pen = { id: this.nextPenId++, kind, x, y, animals: d.start, food: d.trough * 0.5, stored: 0, happiness: 80, breed: 0, autoFeed: true };
+    this.pens.push(pen);
+    this.world.addPen(pen);
+    this.stats.pens = this.pens.length;
+    this.events.emit('pens');
+    const r = penRect(pen);
+    this.events.emit('money', r.x + r.w / 2, r.y + r.h / 2, -d.penCost);
+    return null;
+  }
+
+  buyAnimal(penId: number): string | null {
+    const pen = this.pen(penId);
+    if (!pen) return 'Not available';
+    const d = ANIMAL_DEFS[pen.kind];
+    if (pen.animals >= d.cap) return `The ${d.pen.toLowerCase()} is full`;
+    if (this.money < d.animalCost) return 'Not enough money';
+    this.money -= d.animalCost;
+    pen.animals++;
+    return null;
+  }
+
+  sellAnimal(penId: number): string | null {
+    const pen = this.pen(penId);
+    if (!pen || pen.animals <= 0) return 'No animals to sell';
+    pen.animals--;
+    this.earn(ANIMAL_DEFS[pen.kind].animalCost * 0.6);
+    return null;
+  }
+
+  /** Sells what the pen has stored at today's price. */
+  sellProduce(penId: number): number {
+    const pen = this.pen(penId);
+    if (!pen) return 0;
+    const d = ANIMAL_DEFS[pen.kind];
+    const units = d.product === 'piglets' ? Math.floor(pen.stored) : Math.floor(pen.stored);
+    if (units <= 0) return 0;
+    const earned = units * this.productPrices[d.product];
+    pen.stored -= units;
+    this.earn(earned);
+    this.stats.earned += earned;
+    this.stats.produceEarned += earned;
+    const r = penRect(pen);
+    this.events.emit('money', r.x + r.w / 2, r.y + r.h / 2, earned);
+    return earned;
+  }
+
+  demolishPen(penId: number) {
+    const pen = this.pen(penId);
+    if (!pen) return;
+    for (const v of this.vehicles) if (v.steps.some(st => (st.t === 'load' || st.t === 'unload') && st.penId === penId)) this.orderPark(v.id);
+    this.world.removePen(pen);
+    this.pens = this.pens.filter(p => p.id !== penId);
+    this.events.emit('pens');
+  }
+
+  penFeedDays(p: Pen) {
+    const per = dailyFeed(p);
+    return per > 0 ? p.food / per : Infinity;
+  }
+
   /** The price that counts as "high" for a crop: 15% over its usual price. */
   highPrice(c: CropId) { return Math.round(CROP_DEFS[c].basePrice * 1.15); }
 
@@ -1615,6 +1849,10 @@ export class Game {
       driveCrop: this.driveCrop,
       driveSpread: this.driveSpread,
       priceAlerts: this.priceAlerts,
+      pens: this.pens,
+      nextPenId: this.nextPenId,
+      productPrices: this.productPrices,
+      productHistory: this.productHistory,
       nextId: this.nextId,
       nextFieldId: this.nextFieldId,
     };
@@ -1663,6 +1901,13 @@ export class Game {
     if (data.ledger) g.ledger = data.ledger;
     if (data.driveCrop) g.driveCrop = data.driveCrop;
     if (data.driveSpread) g.driveSpread = data.driveSpread;
+    if (data.pens) {
+      g.pens = data.pens.map(p => ({ ...p }));
+      for (const p of g.pens) g.world.addPen(p);
+      g.nextPenId = data.nextPenId ?? g.pens.reduce((m, p) => Math.max(m, p.id + 1), 1);
+    }
+    if (data.productPrices) g.productPrices = { ...g.productPrices, ...data.productPrices };
+    if (data.productHistory) g.productHistory = { ...g.productHistory, ...data.productHistory };
     if (data.priceAlerts) g.priceAlerts = data.priceAlerts.filter(c => CROPS.includes(c));
     g.nextId = data.nextId;
     g.nextFieldId = data.nextFieldId;
@@ -1675,6 +1920,7 @@ export class Game {
     const minutes = Math.min(elapsedSec * GAME_MIN_PER_SEC * OFFLINE_RATE, OFFLINE_CAP_MIN);
     const startDay = g.day;
     g.growth += growthBetween(g.clock, g.clock + minutes);
+    g.tickPens(minutes);
     g.clock += minutes;
     const days = g.day - startDay;
     for (let d = 0; d < days; d++) g.newDay();
