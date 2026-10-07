@@ -11,10 +11,13 @@ import { Landscape } from './render/landscape';
 import { Roadside } from './render/roadside';
 import { Scenery } from './render/scenery';
 import { Grass } from './render/grass';
+import { updateCloudShadows } from './render/cloudShadows';
 import { RigView } from './render/rig';
 import { TrafficView } from './render/trafficView';
 import { Rain, makeFx } from './render/fx';
-import { CameraRig } from './render/cameraRig';
+import { CameraRig, CamMode } from './render/cameraRig';
+import { TRUCK_MODELS } from './sim/trucks';
+import { STATIONS } from './radio';
 import { Post } from './render/post';
 import { Hud } from './ui/hud';
 import { Input, SteerMode } from './ui/input';
@@ -111,10 +114,12 @@ async function boot() {
   const roadside = new Roadside(world);
   scene.add(roadside.group);
   await progress(0.7, 'Planting forests and building towns…');
-  const scenery = new Scenery(world, tier === 'low');
+  const scenery = new Scenery(world, tier === 'low', cfg.post && cfg.msaa > 0);
   scene.add(scenery.group);
   const grass = cfg.grass > 0 ? new Grass(world, cfg.grass, (x, z, out) => land.groundColor(x, z, out)) : null;
   if (grass) scene.add(grass.mesh);
+  const crops = cfg.grass > 0 ? new Grass(world, Math.round(cfg.grass * 0.6), (x, z, out) => land.cropColor(x, z, out), true) : null;
+  if (crops) scene.add(crops.mesh);
   await progress(0.85, 'Fuelling the truck…');
 
   let hud: Hud | null = null;
@@ -148,15 +153,27 @@ async function boot() {
       if (game.job?.to === d.id) hud?.toast(`Arrived at ${d.company} · park in the glowing bay`, 'good');
       else hud?.toast(`${d.company} · ${d.name}${d.fuel ? ' · fuel' : ''}`, 'info');
     },
-    coupled: (job) => {
+    speedCam: (kmh, limit, fine) => {
+      roadside.flash();
+      audio.cameraClick();
+      hud?.flash();
+      hud?.toast(`Speed camera: ${kmh} km/h in a ${limit} zone · fine €${fine}`, 'bad');
+    },
+    trailerReady: (job) => {
       rig.setTrailer(job.cargo.trailer, job.livery);
+      roadside.setMarker(world.depots[game.depotId], true);
+    },
+    coupled: (job) => {
       const d = world.depots[job.to];
       roadside.setMarker(d);
+      audio.couple();
       hud?.toast(`Trailer coupled · deliver to ${d.name}`, 'good');
     },
   });
   game.onShift = () => audio.shiftHiss();
-  const rig = new RigView(scene, world, game.color, lampLights >= 2 ? 2 : 1);
+  audio.cylinders = TRUCK_MODELS[game.model].cylinders;
+  audio.bigHorn = game.upgrades.has('horn');
+  const rig = new RigView(scene, world, game.look, lampLights >= 2 ? 2 : 1, tier === 'ultra' ? 160 : tier === 'high' ? 120 : 0);
   const traffic = new TrafficView(scene, game.traffic, world.road);
 
   // Street lamps light the road around the truck at night with a few real point lights.
@@ -187,6 +204,7 @@ async function boot() {
 
   // ---- HUD and actions
   let started = false;
+  let camBefore: CamMode = 'chase';
   let paused = false;
   const lightsCycle = ['auto', 'on', 'high', 'off'] as const;
   const settings = { tier, steer: prefs.steer, time: null as number | null, weather: null as Weather | null, volume: prefs.volume, fps: prefs.fps, canFloat };
@@ -225,12 +243,20 @@ async function boot() {
       audio.click();
     },
     hazard: () => { game.hazard = !game.hazard; audio.click(); },
+    radio: () => {
+      audio.start();
+      const st = audio.radio?.cycle() ?? -1;
+      hud!.toast(st < 0 ? 'Radio off' : `${STATIONS[st].name} · ${STATIONS[st].genre}`, 'info');
+      document.querySelector('[data-a="radio"]')?.classList.toggle('on', st >= 0);
+    },
     roof: () => { game.roofLights = !game.roofLights; },
     accept: (job: Job) => { game.accept(job); },
     deliver: () => { game.deliver(); },
     refuel: () => game.refuel(),
     repair: () => game.repair(),
     cancelJob: () => { game.cancelJob(); rig.setTrailer(null); roadside.setMarker(null); },
+    couple: () => game.couple(),
+    crewCouple: () => game.crewCouple(),
     setTier: (t) => { saveTier(t); game.save(); location.reload(); },
     setSteer: (m) => {
       input.mode = m; prefs.steer = m; savePrefs(prefs);
@@ -238,7 +264,20 @@ async function boot() {
     },
     setTime: (h) => { game.fixedHour = h; },
     setWeather: (w) => { game.fixedWeather = w; if (w) game.weather = w; },
-    setColor: (c) => { game.color = c; rig.repaint(c); game.save(); },
+    setColor: (c) => { game.color = c; rig.fit(game.look); game.save(); },
+    setAccent: (c) => { game.accent = c; rig.fit(game.look); game.save(); },
+    garage: (open) => {
+      hud!.showHud(!open);
+      if (open) { camBefore = cam.mode; cam.mode = 'showcase'; rig.setInterior(false); }
+      else { cam.mode = camBefore; rig.setInterior(cam.mode === 'cab'); }
+    },
+    preview: (model) => rig.fit(model == null ? game.look : { ...game.look, model, chrome: game.look.chrome || model === 2, lightbar: game.look.lightbar || model === 2 }),
+    chooseTruck: (id) => {
+      const ok = game.chooseTruck(id);
+      if (ok) { rig.fit(game.look); audio.cylinders = TRUCK_MODELS[game.model].cylinders; } else hud!.toast('Not enough money yet', 'bad');
+      return ok;
+    },
+    buyUpgrade: (id) => { if (game.buyUpgrade(id)) { rig.fit(game.look); audio.bigHorn = game.upgrades.has('horn'); } },
     setVolume: (v) => { audio.setVolume(v); prefs.volume = v; savePrefs(prefs); },
     toggleFps: () => { prefs.fps = settings.fps; savePrefs(prefs); },
     fullscreen: () => {
@@ -268,7 +307,7 @@ async function boot() {
     else if (a === 'roof') game.roofLights = !game.roofLights;
     else if (a === 'menu') { if (hud!.overlayOpen) hud!.close(); else hud!.showMenu(); }
     else if (a === 'jobs' && game.atDepot && !game.job) hud!.showJobs();
-    else if (a === 'action') { if (game.canDeliver()) game.deliver(); }
+    else if (a === 'action') { if (game.canCouple()) game.couple(); else if (game.canDeliver()) game.deliver(); }
   };
 
   // Orbit / look around by dragging the 3D view, pinch to zoom.
@@ -332,6 +371,7 @@ async function boot() {
     focus.set(t.x, rig.tractor.root.position.y, t.z);
     sky.update(game.hours, game.cloud, game.rain, time, focus, cam.camera);
     if (cfg.envMap) sky.updateEnv(time);
+    updateCloudShadows(time, game.cloud, sky.sunDir.y);
     const fog = scene.fog as THREE.FogExp2;
     fog.color.copy(sky.fogColor);
     fog.density = 0.00014 + game.cloud * 0.0001 + game.rain * 0.0015 + sky.night * 0.0001;
@@ -344,12 +384,14 @@ async function boot() {
       tail: game.lightsOn(night) || night > 0.2, indL: game.indL || game.hazard, indR: game.indR || game.hazard,
       reverse: t.drive === 'R', roof: game.roofLights || (night > 0.4 && game.lightsOn(night)),
     };
+    rig.pickup = game.pickup;
     rig.update(dt, time, t, lights, night, game.rain, fx, game.wet);
     traffic.update(dt, night);
     land.update(time);
     const wind = 0.6 + game.rain * 1.4 + game.cloud * 0.4;
     scenery.update(time, night, cam.camera.position, wind);
     grass?.update(cam.camera, time, wind);
+    crops?.update(cam.camera, time, wind * 1.3);
     roadside.update(time, night, cam.camera.position.distanceTo(focus));
 
     lampT -= dt;
@@ -383,6 +425,8 @@ async function boot() {
       if (cam.mode === 'cab') sunAmt *= 0.6;
     }
     try {
+      rig.renderMirrors(renderer, scene);
+      if (post) post.rays = tier === 'high' || tier === 'ultra' ? 1 : 0;
       if (post) post.render(time, night, sunAmt > 0 ? sunScreen : null, sunAmt, sky.sun.color, game.wet);
       else renderer.render(scene, cam.camera);
     } catch (err) {
@@ -391,6 +435,7 @@ async function boot() {
       if (post) { post = null; hud?.toast('Effects turned off for this device', 'bad'); }
     }
 
+    audio.radio?.setPlace(cam.mode === 'cab', settings.volume);
     audio.update(dt, { rpm: t.rpm, load: t.load, speed: t.speed, rain: game.rain, horn: game.horn, braking: t.braking, indicator: (game.indL || game.indR || game.hazard) && started, interior: cam.mode === 'cab' });
 
     fpsAvg = lerp(fpsAvg, 1 / Math.max(1e-3, rawDt), 0.05);

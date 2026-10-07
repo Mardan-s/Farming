@@ -3,7 +3,7 @@ import type { Car, CarKind, Traffic } from '../sim/traffic';
 import type { Road } from '../sim/road';
 import type { TrailerKind } from '../sim/jobs';
 import { mergeStatic, paint } from './materials';
-import { LightMats, LightState, applyLights, buildCar, buildTractor, buildTrailer, truckPaintFor } from './vehicles';
+import { LightMats, LightState, aiTruckLook, applyLights, buildCar, buildTractor, buildTrailer } from './vehicles';
 
 // Draws the AI traffic. Models are pooled per vehicle kind and repainted when a car respawns.
 
@@ -22,7 +22,7 @@ export class TrafficView {
 
   private make(kind: CarKind, seed: number): Model {
     if (kind === 'truck') {
-      const tr = buildTractor(truckPaintFor(seed), { interior: false, lod: true });
+      const tr = buildTractor(aiTruckLook(seed), { interior: false, lod: true });
       const tl = buildTrailer(TRUCK_TRAILERS[seed % TRUCK_TRAILERS.length], seed + 1, { lod: true });
       const root = new THREE.Group();
       root.add(tr.root);

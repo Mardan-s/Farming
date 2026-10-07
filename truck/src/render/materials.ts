@@ -33,6 +33,8 @@ export const MAT = {
   rim: new THREE.MeshStandardMaterial({ color: 0xd9dde2, metalness: 1, roughness: 0.18 }),
   rimDark: new THREE.MeshStandardMaterial({ color: 0x2a2c30, metalness: 0.6, roughness: 0.4 }),
   glass: new THREE.MeshStandardMaterial({ color: 0x0a0f14, metalness: 0.9, roughness: 0.03, envMapIntensity: 1.4 }),
+  /** See-through tinted glass for the player's cab, so the interior shows from outside. */
+  glassCab: new THREE.MeshStandardMaterial({ color: 0x1c2730, metalness: 0.6, roughness: 0.03, transparent: true, opacity: 0.55, envMapIntensity: 1.6, depthWrite: false }),
   glassInside: new THREE.MeshStandardMaterial({ color: 0x9fb3c2, metalness: 0, roughness: 0.05, transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide }),
   mirror: new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1, roughness: 0.02 }),
   interior: new THREE.MeshStandardMaterial({ color: 0x2a2826, metalness: 0, roughness: 0.85 }),

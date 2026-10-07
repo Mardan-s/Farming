@@ -22,6 +22,7 @@ export const ICON = {
   drop: s('<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/>'),
   tank: s('<rect x="3" y="7" width="18" height="10" rx="5"/><path d="M8 7v10M16 7v10"/>'),
   phone: s('<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/>'),
+  radio: s('<rect x="3" y="8" width="18" height="12" rx="2"/><path d="M7 8l9-5"/><circle cx="15" cy="14" r="2.5"/><path d="M6 12h4M6 15h4"/>'),
   expand: s('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
 };
 

@@ -5,6 +5,7 @@ import { bayOffsets, yardProps } from '../sim/yard';
 import { MAT, box, cyl, lamp, mergeStatic } from './materials';
 import { ROAD_TEX_LEN, ROAD_TEX_W, asphalt, concrete, depotBoard, gantrySign, groundDetail, radial, speedSign } from './textures';
 import { buildTrailer } from './vehicles';
+import { withCloudShadows } from './cloudShadows';
 
 // The motorway itself and everything along it: asphalt, verges, the concrete median barrier,
 // guard rails, delineator posts, street lights, overhead direction signs, and the depot yards.
@@ -68,12 +69,13 @@ export class Roadside {
     this.canopyLight = lamp(0xffffff, 0xdddddd);
     const tex = asphalt();
     const roadMat = new THREE.MeshStandardMaterial({ map: tex.map, roughnessMap: tex.roughness, normalMap: tex.normal, normalScale: new THREE.Vector2(0.6, 0.6), roughness: 1, metalness: 0 });
-    this.roadMat = roadMat;
+    this.roadMat = withCloudShadows(roadMat);
     const detail = groundDetail();
     const vergeMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: detail.map, roughness: 0.95 });
     vergeMat.onBeforeCompile = (sh) => {
       sh.fragmentShader = sh.fragmentShader.replace('#include <map_fragment>', '#ifdef USE_MAP\n diffuseColor.rgb *= texture2D(map, vMapUv).rgb * 2.0;\n#endif');
     };
+    withCloudShadows(vergeMat);
     const barrierMat = new THREE.MeshStandardMaterial({ color: 0xb5b2aa, roughness: 0.85, map: concrete(12, 0.62, false) });
     const railMat = new THREE.MeshStandardMaterial({ color: 0xc1c6cc, metalness: 0.85, roughness: 0.32, side: THREE.DoubleSide });
     const uIn = -MEDIAN_HALF / ROAD_TEX_W;
@@ -91,7 +93,7 @@ export class Roadside {
         const verge = strip(world, i0, i1, side > 0
           ? [{ lat: CARRIAGE_OUT - 0.02, dy: -0.07, u: 0, color: gravel }, { lat: CARRIAGE_OUT + 1.4, dy: -0.2, u: 0.2, color: dirt }, { lat: CARRIAGE_OUT + 4.5, u: 1, terrain: true, color: grass }]
           : [{ lat: -CARRIAGE_OUT - 4.5, u: 1, terrain: true, color: grass }, { lat: -CARRIAGE_OUT - 1.4, dy: -0.2, u: 0.2, color: dirt }, { lat: -CARRIAGE_OUT + 0.02, dy: -0.07, u: 0, color: gravel }], 7,
-        side > 0 ? (s) => world.depotAt(s, CARRIAGE_OUT + 1) !== null : undefined);
+        (s) => world.onBridge(s) || (side > 0 && world.depotAt(s, CARRIAGE_OUT + 1) !== null));
         const vm = new THREE.Mesh(verge, vergeMat);
         vm.receiveShadow = true;
         this.group.add(vm);
@@ -114,6 +116,7 @@ export class Roadside {
       bm.receiveShadow = true;
       this.group.add(bm);
     }
+    this.buildViaduct();
     this.buildPosts();
     this.buildLamps();
     this.buildSigns();
@@ -142,6 +145,55 @@ export class Roadside {
     const t = road.sample(s, { x: 0, y: 0, z: 0, tx: 0, tz: 1 });
     const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(t.tx, t.tz) + yaw);
     return new THREE.Matrix4().compose(new THREE.Vector3(p.x, p.y + dy, p.z), q, new THREE.Vector3(sc, sc, sc));
+  }
+
+  /** Concrete deck edges, a soffit and piers down to the valley floor. */
+  private buildViaduct() {
+    const road = this.world.road, w = this.world;
+    const s0 = w.river.s - w.bridgeHalf, s1 = w.river.s + w.bridgeHalf;
+    const i0 = Math.floor(s0 / road.step), i1 = Math.ceil(s1 / road.step);
+    const n = road.n;
+    const wrapI = (i: number) => ((i % n) + n) % n;
+    const mat = new THREE.MeshStandardMaterial({ color: 0xbab6ad, roughness: 0.85, map: concrete(31, 0.62, false), side: THREE.DoubleSide });
+    const E = RAIL_LAT + 0.5, T = 1.9;
+    const a = wrapI(i0), b = a + (i1 - i0);
+    for (const cols of [
+      [{ lat: -E, dy: 0.15, u: 0 }, { lat: -E, dy: -T, u: 1 }],
+      [{ lat: E, dy: -T, u: 0 }, { lat: E, dy: 0.15, u: 1 }],
+      [{ lat: -E, dy: -T, u: 0 }, { lat: E, dy: -T, u: 1 }],
+      [{ lat: -E, dy: 0.15, u: 0 }, { lat: -CARRIAGE_OUT, dy: 0.02, u: 0.2 }],
+      [{ lat: CARRIAGE_OUT, dy: 0.02, u: 0 }, { lat: E, dy: 0.15, u: 0.2 }],
+    ] as Col[][]) {
+      const m = new THREE.Mesh(strip(w, a, b, cols, 6), mat);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      this.group.add(m);
+    }
+    // Piers: twin columns under each carriageway on a cap beam.
+    const pier = new THREE.Group();
+    for (const lat of [-6.5, 6.5]) {
+      const col = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1, 1.6), mat);
+      col.position.set(-lat, -0.5, 0);
+      pier.add(col);
+    }
+    const p = { x: 0, y: 0, z: 0 }, t = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
+    for (let s = s0 + 30; s < s1 - 20; s += 38) {
+      road.toWorld(s, 0, p);
+      road.sample(s, t);
+      const ground = Math.min(w.terrainHeight(p.x, p.z), w.terrainHeight(p.x - t.tz * 6.5, p.z + t.tx * 6.5), w.terrainHeight(p.x + t.tz * 6.5, p.z - t.tx * 6.5)) - 1;
+      const top = p.y - T;
+      const h = top - ground;
+      if (h < 2) continue;
+      const g = pier.clone();
+      g.children.forEach((c) => { c.scale.y = h; c.position.y = ground + h / 2; });
+      const capBeam = new THREE.Mesh(new THREE.BoxGeometry(E * 2 - 1, 1.2, 2.2), mat);
+      capBeam.position.y = top - 0.6;
+      g.add(capBeam);
+      g.position.set(p.x, 0, p.z);
+      g.rotation.y = Math.atan2(t.tx, t.tz);
+      g.traverse((o) => { o.castShadow = true; o.receiveShadow = true; });
+      this.group.add(g);
+    }
   }
 
   private buildPosts() {
@@ -240,7 +292,35 @@ export class Roadside {
     }
     this.instanced(new THREE.CircleGeometry(0.42, 32), signMat, plates, false);
     this.instanced(new THREE.CylinderGeometry(0.04, 0.04, 2.4, 8), MAT.galvanized, poles);
+    // Town zones: 80 signs where they start, 90 where they end, and a speed camera in each.
+    const z80 = new THREE.MeshStandardMaterial({ map: speedSign(80), roughness: 0.4, transparent: true, alphaTest: 0.5 });
+    const p80: THREE.Matrix4[] = [], p90: THREE.Matrix4[] = [], zp: THREE.Matrix4[] = [];
+    for (const d of this.world.depots) {
+      for (const lat of [RAIL_LAT + 1.3, -0.0]) {
+        p80.push(this.place(d.s - 650, lat === 0 ? 0 : lat, lat === 0 ? 2.9 : 2.4, Math.PI));
+        zp.push(this.place(d.s - 650, lat, lat === 0 ? 1.7 : 1.2));
+      }
+      p90.push(this.place(d.s + 450, RAIL_LAT + 1.3, 2.4, Math.PI));
+      zp.push(this.place(d.s + 450, RAIL_LAT + 1.3, 1.2));
+      const cam = new THREE.Group();
+      const pole = cyl(0.09, 0.11, 3.2, MAT.galvanized, 10); pole.position.y = 1.6; cam.add(pole);
+      box(0.5, 0.75, 0.6, new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.4, metalness: 0.4 }), 0, 3.4, 0, cam);
+      box(0.3, 0.3, 0.02, MAT.glass, 0, 3.5, -0.31, cam);
+      const flash = box(0.36, 0.12, 0.03, this.camFlash, 0, 3.1, -0.31, cam);
+      void flash;
+      box(0.58, 0.12, 0.62, new THREE.MeshStandardMaterial({ color: 0x1b1d20 }), 0, 3.82, 0, cam);
+      cam.applyMatrix4(this.place(d.s - 330, RAIL_LAT + 1.6, 0));
+      this.group.add(cam);
+    }
+    this.instanced(new THREE.CircleGeometry(0.42, 32), z80, p80, false);
+    this.instanced(new THREE.CircleGeometry(0.42, 32), signMat, p90, false);
+    this.instanced(new THREE.CylinderGeometry(0.04, 0.04, 2.4, 8), MAT.galvanized, zp);
   }
+
+  /** Lamp on the speed cameras, flashed when they catch someone. */
+  readonly camFlash = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0xffffff, emissiveIntensity: 0 });
+  private flashT = 0;
+  flash() { this.flashT = 0.25; }
 
   private signMats: THREE.MeshStandardMaterial[] = [];
 
@@ -356,15 +436,19 @@ export class Roadside {
   }
 
   /** Highlights the delivery bay at the job's destination (or hides it). */
-  setMarker(d: Depot | null) {
+  setMarker(d: Depot | null, pickup = false) {
     this.marker.visible = !!d;
     if (!d) return;
+    (this.markerBeam.material as THREE.MeshBasicMaterial).color.set(pickup ? 0x50ff9a : 0xffa040);
+    this.markerRing.emissive.set(pickup ? 0x40ff90 : 0xff9a2a);
     this.marker.matrixAutoUpdate = true;
     const m = this.place(d.bayS, d.bayLat, 0);
     m.decompose(this.marker.position, this.marker.quaternion, this.marker.scale);
   }
 
   update(time: number, night: number, camDist: number) {
+    this.flashT = Math.max(0, this.flashT - 1 / 60);
+    this.camFlash.emissiveIntensity = this.flashT > 0 ? 40 : 0;
     this.lampHeads.emissiveIntensity = night > 0.3 ? 3.2 : 0;
     this.canopyLight.emissiveIntensity = night > 0.3 ? 3 : 0.2;
     this.reflectors.emissiveIntensity = 0.2 + night * 2.5;

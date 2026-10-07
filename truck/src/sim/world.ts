@@ -30,7 +30,8 @@ export interface Field { i0: number; j0: number; i1: number; j1: number; kind: F
 export interface Lake { x: number; z: number; r: number; level: number }
 export type BuildingKind = 'house' | 'block' | 'barn' | 'church' | 'warehouse' | 'office';
 export interface Building { x: number; z: number; y: number; w: number; d: number; h: number; rot: number; kind: BuildingKind; color: number; roof: number; seed: number }
-export interface Tree { x: number; y: number; z: number; s: number; rot: number; kind: 0 | 1 | 2 }
+/** kind: 0 fir, 1 broadleaf, 2 poplar, 3 bush */
+export interface Tree { x: number; y: number; z: number; s: number; rot: number; kind: 0 | 1 | 2 | 3 }
 export interface Turbine { x: number; y: number; z: number; rot: number; phase: number }
 
 const DEPOT_DEFS: Omit<Depot, 'id' | 's' | 'bayS' | 'bayLat'>[] = [
@@ -51,6 +52,8 @@ export class World {
   readonly buildings: Building[] = [];
   readonly trees: Tree[] = [];
   readonly turbines: Turbine[] = [];
+  /** A river valley the motorway crosses on a viaduct. */
+  readonly river: { x0: number; z0: number; x1: number; z1: number; s: number; level: number; half: number };
   /** 4 m occupancy grid used while placing things (fields, water, buildings, yards). */
   private occ: Uint8Array;
   private readonly occRes = 1000;
@@ -65,6 +68,15 @@ export class World {
     this.occ = new Uint8Array(this.occRes * this.occRes);
     this.heights = new Float32Array((TERRAIN_RES + 1) * (TERRAIN_RES + 1));
     const rnd = mulberry32(seed * 7 + 3);
+    // The river crosses the road at right angles between the second and third depots.
+    {
+      const s = this.road.length * 0.335;
+      const p = this.road.sample(s, { x: 0, y: 0, z: 0, tx: 0, tz: 1 });
+      // Run it from a valley head just inside the loop out to the mountains, so it only crosses once.
+      let nx = -p.tz, nz = p.tx;
+      if (nx * p.x + nz * p.z < 0) { nx = -nx; nz = -nz; }
+      this.river = { x0: p.x - nx * 380, z0: p.z - nz * 380, x1: p.x + nx * 2800, z1: p.z + nz * 2800, s, level: p.y - 24, half: 130 };
+    }
     this.placeLakes(rnd);
     this.buildTerrain();
     this.reserveYards();
@@ -112,12 +124,40 @@ export class World {
           if (d < re) h = lk.level - 0.4 - 5 * (1 - (d / re) ** 2);
           else h = lerp(Math.max(h, lk.level + 0.35), h, smoothstep(re * 1.08, re * 1.6, d));
         }
+        // River valley: a wide U carved along the river line, with the river at its floor.
+        const rd = this.riverDistance(x, z);
+        if (rd < this.river.half) {
+          const f = rd / this.river.half;
+          const floor = this.river.level - 1.5 + (f * f) * 30;
+          h = lerp(Math.min(h, floor), h, smoothstep(0.7, 1, f));
+        }
         const p = this.pavedDistance(x, z);
-        if (p) h = lerp(p.y - 0.45, h, smoothstep(12, 62, p.e));
+        // On the viaduct the ground is left alone so the valley shows beneath the deck.
+        const hit = p ? this.road.locate(x, z) : null;
+        const onBridge = hit ? Math.abs(this.road.delta(this.river.s, hit.s)) < this.bridgeHalf : false;
+        if (p && !onBridge) h = lerp(p.y - 0.45, h, smoothstep(12, 62, p.e));
+        else if (p && onBridge) {
+          const ds = Math.abs(this.road.delta(this.river.s, hit!.s));
+          const edge = smoothstep(this.bridgeHalf - 25, this.bridgeHalf, ds);
+          h = lerp(h, lerp(p.y - 0.45, h, smoothstep(12, 62, p.e)), edge);
+        }
         this.heights[j * (R + 1) + i] = h;
       }
     }
   }
+
+  /** Half length of the viaduct along the road. */
+  readonly bridgeHalf = 150;
+
+  riverDistance(x: number, z: number) {
+    const r = this.river;
+    const dx = r.x1 - r.x0, dz = r.z1 - r.z0;
+    const t = clamp(((x - r.x0) * dx + (z - r.z0) * dz) / (dx * dx + dz * dz), 0, 1);
+    return Math.hypot(x - (r.x0 + dx * t), z - (r.z0 + dz * t));
+  }
+
+  /** Is this point of the road on the viaduct? */
+  onBridge(s: number) { return Math.abs(this.road.delta(this.river.s, s)) < this.bridgeHalf - 5; }
 
   /** Terrain mesh height, matching the triangle split used by the renderer exactly. */
   terrainHeight(x: number, z: number) {
@@ -157,7 +197,7 @@ export class World {
   }
   private occupied(x: number, z: number) {
     const k = this.occIndex(x, z);
-    return k < 0 || this.occ[k] !== 0;
+    return k < 0 || this.occ[k] !== 0 || this.riverDistance(x, z) < this.river.half * 0.55;
   }
   private mark(x0: number, z0: number, x1: number, z1: number, v = 1) {
     for (let z = z0; z <= z1; z += 4) for (let x = x0; x <= x1; x += 4) {
@@ -314,7 +354,7 @@ export class World {
   }
 
   private placeTrees(rnd: () => number, budget: number) {
-    const add = (x: number, z: number, kind: 0 | 1 | 2, scale: number) => {
+    const add = (x: number, z: number, kind: 0 | 1 | 2 | 3, scale: number) => {
       if (this.trees.length >= budget) return;
       if (this.occupied(x, z)) return;
       const gap = this.roadGap(x, z);
@@ -331,7 +371,8 @@ export class World {
       const side = Math.floor(rnd() * 4);
       for (let t = 0; t <= 1; t += 0.03 + rnd() * 0.03) {
         const [x, z] = side === 0 ? [lerp(x0, x1, t), z0] : side === 1 ? [x1, lerp(z0, z1, t)] : side === 2 ? [lerp(x0, x1, t), z1] : [x0, lerp(z0, z1, t)];
-        add(x + (rnd() - 0.5) * 3, z + (rnd() - 0.5) * 3, rnd() < 0.8 ? 1 : 2, 0.8 + rnd() * 0.5);
+        const r = rnd();
+        add(x + (rnd() - 0.5) * 3, z + (rnd() - 0.5) * 3, r < 0.45 ? 3 : r < 0.85 ? 1 : 2, 0.8 + rnd() * 0.5);
       }
     }
     // Forests where the noise says so, scattered trees elsewhere.
@@ -356,6 +397,15 @@ export class World {
     for (const d of this.depots) if (Math.abs(this.road.delta(d.s, s)) < d.sHalf - 1) return true;
     return false;
   }
+
+  /** 80 km/h zones through the towns around each depot. */
+  zoneAt(s: number) {
+    for (const d of this.depots) { const ds = this.road.delta(d.s, s); if (ds > -650 && ds < 450) return d; }
+    return null;
+  }
+
+  /** Speed cameras guard each town zone, on the right-hand shoulder. */
+  get speedCameras() { return this.depots.map((d) => d.s - 330); }
 
   /** Which s along the loop is closest to a fraction, used for spawning. */
   sAt(frac: number) { return wrap(frac, 1) * this.road.length; }

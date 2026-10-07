@@ -3,6 +3,7 @@ import type { Delivery, Job } from '../sim/jobs';
 import type { Depot } from '../sim/world';
 import { FUEL_CAP } from '../sim/truck';
 import { formatMoney } from '../util';
+import { ACCENTS, TRUCK_MODELS, UPGRADES, UpgradeId } from '../sim/trucks';
 import type { Tier } from '../render/quality';
 import { ICON, WHEEL_SVG } from './icons';
 import { Input, SteerMode } from './input';
@@ -19,17 +20,25 @@ export interface HudActions {
   drive(d: 'D' | 'N' | 'R'): void;
   ind(side: 'L' | 'R'): void;
   hazard(): void;
+  radio(): void;
   roof(): void;
   accept(job: Job): void;
   deliver(): void;
   refuel(): void;
   repair(): void;
   cancelJob(): void;
+  couple(): void;
+  crewCouple(): void;
   setTier(t: Tier): void;
   setSteer(m: SteerMode): void;
   setTime(h: number | null): void;
   setWeather(w: Weather | null): void;
   setColor(c: number): void;
+  setAccent(c: number): void;
+  garage(open: boolean): void;
+  preview(model: number | null): void;
+  chooseTruck(id: number): boolean;
+  buyUpgrade(id: UpgradeId): void;
   setVolume(v: number): void;
   toggleFps(): void;
   fullscreen(): void;
@@ -90,6 +99,7 @@ export class Hud {
         <button class="ib glass" data-a="lights" aria-label="Headlights">${ICON.light}</button>
         <button class="ib glass" data-a="horn" aria-label="Horn">${ICON.horn}</button>
         <button class="ib glass" data-a="cruise" aria-label="Cruise control">${ICON.cruise}</button>
+        <button class="ib glass" data-a="radio" aria-label="Radio">${ICON.radio}</button>
         <div class="drive-sel glass"><button data-d="R">R</button><button data-d="N">N</button><button data-d="D">D</button></div>
       </div>
       <div class="pedals">
@@ -123,6 +133,7 @@ export class Hud {
         else if (a === 'indL') act.ind('L');
         else if (a === 'indR') act.ind('R');
         else if (a === 'hazard') act.hazard();
+        else if (a === 'radio') act.radio();
       });
     });
     this.hud.querySelectorAll<HTMLElement>('[data-d]').forEach((b) => b.addEventListener('click', () => act.drive(b.dataset.d as 'D' | 'N' | 'R')));
@@ -144,6 +155,13 @@ export class Hud {
     if (this.last[k] === v) return;
     this.last[k] = v;
     this.el[k].textContent = v;
+  }
+
+  /** White camera-flash over the whole screen. */
+  flash() {
+    const f = h('<div class="camflash"></div>');
+    this.root.appendChild(f);
+    setTimeout(() => f.remove(), 700);
   }
 
   toast(text: string, kind: 'good' | 'bad' | 'info' = 'info') {
@@ -206,9 +224,12 @@ export class Hud {
     const g = this.game;
     const list: [string, string, string, boolean][] = [];
     const stopped = Math.abs(g.truck.speed) < 0.5;
+    if (g.pickup && g.canCouple()) list.push(['couple', ICON.flag, 'Couple trailer', false]);
+    if (g.pickup && g.atDepot && stopped && !g.canCouple()) list.push(['crew', ICON.wrench, 'Yard crew couples it · €150', true]);
     if (g.atDepot && stopped) {
       if (g.canDeliver()) list.push(['deliver', ICON.flag, g.parkedInBay() ? 'Deliver · parking bonus' : 'Deliver cargo', false]);
       if (!g.job) list.push(['jobs', ICON.box, 'Job board', false]);
+      list.push(['garage', ICON.wrench, 'Garage', true]);
       if (g.canRefuel()) list.push(['refuel', ICON.fuel, `Refuel ~${formatMoney(Math.ceil(((FUEL_CAP - g.truck.fuel) * 1.45) / 10) * 10)}`, true]);
       if (g.canRepair()) list.push(['repair', ICON.wrench, `Repair ${formatMoney(g.repairCost())}`, true]);
     }
@@ -222,9 +243,12 @@ export class Hud {
       b.querySelector('span')!.textContent = label;
       b.addEventListener('click', () => {
         if (id === 'deliver') this.act.deliver();
+        else if (id === 'couple') this.act.couple();
+        else if (id === 'crew') this.act.crewCouple();
         else if (id === 'jobs') this.showJobs();
         else if (id === 'refuel') this.act.refuel();
         else if (id === 'repair') this.act.repair();
+        else if (id === 'garage') this.showGarage();
       });
       box.appendChild(b);
     }
@@ -312,6 +336,62 @@ export class Hud {
     el.querySelector('[data-x="next"]')!.addEventListener('click', () => this.showJobs());
     el.querySelector('[data-x="drive"]')!.addEventListener('click', () => this.close());
     this.open(el);
+  }
+
+  /** Dealer and workshop. The 3D view orbits the truck while this is open. */
+  showGarage(tab: 'trucks' | 'upgrades' | 'paint' = 'trucks') {
+    const g = this.game;
+    let previewing: number | null = null;
+    const el = h(`<div class="overlay side"><div class="panel garage">
+      <div class="panel-head"><div><h2>Garage</h2><div class="sub" data-g="cash"></div></div><button class="x">${ICON.close}</button></div>
+      <div class="seg tabs">${(['trucks', 'upgrades', 'paint'] as const).map((t) => `<button data-t="${t}" class="${t === tab ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div>
+      <div class="gbody"></div>
+    </div></div>`);
+    const body = el.querySelector('.gbody') as HTMLElement;
+    const bar = (v: number, max: number) => `<span class="meter"><i style="width:${Math.round((v / max) * 100)}%"></i></span>`;
+    const render = () => {
+      (el.querySelector('[data-g="cash"]') as HTMLElement).textContent = `${formatMoney(g.money)} in the bank`;
+      if (tab === 'trucks') {
+        body.innerHTML = TRUCK_MODELS.map((m) => {
+          const owned = g.owned.includes(m.id), current = g.model === m.id, sel = (previewing ?? g.model) === m.id;
+          const btn = current ? '<span class="tagok">DRIVING</span>' : owned ? `<button class="btn small" data-buy="${m.id}">Drive this</button>` : `<button class="btn small" data-buy="${m.id}" ${g.money < m.price ? 'disabled' : ''}>Buy ${formatMoney(m.price)}</button>`;
+          return `<div class="tcard ${sel ? 'sel' : ''}" data-m="${m.id}"><div class="trow"><b>${m.name}</b>${btn}</div>
+            <div class="meta">${m.blurb}</div>
+            <div class="stats2"><span>Power ${m.hp} hp</span>${bar(m.hp, 760)}<span>Torque ${m.torque} N·m</span>${bar(m.torque, 3600)}</div></div>`;
+        }).join('');
+        body.querySelectorAll<HTMLElement>('[data-m]').forEach((c) => c.addEventListener('click', () => {
+          previewing = Number(c.dataset.m);
+          this.act.preview(previewing === g.model ? null : previewing);
+          render();
+        }));
+        body.querySelectorAll<HTMLElement>('[data-buy]').forEach((b) => b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (this.act.chooseTruck(Number(b.dataset.buy))) { previewing = null; this.act.preview(null); }
+          render();
+        }));
+      } else if (tab === 'upgrades') {
+        body.innerHTML = UPGRADES.map((u) => {
+          const has = g.upgrades.has(u.id) || (g.model === 2 && (u.id === 'chrome' || u.id === 'lightbar'));
+          return `<div class="tcard"><div class="trow"><b>${u.name}</b>${has ? '<span class="tagok">FITTED</span>' : `<button class="btn small" data-u="${u.id}" ${g.money < u.price ? 'disabled' : ''}>${formatMoney(u.price)}</button>`}</div><div class="meta">${u.detail}</div></div>`;
+        }).join('');
+        body.querySelectorAll<HTMLElement>('[data-u]').forEach((b) => b.addEventListener('click', () => { this.act.buyUpgrade(b.dataset.u as UpgradeId); render(); }));
+      } else {
+        const sw = (list: number[], cur: number, key: string) => `<div class="swatches">${list.map((c) => `<button data-${key}="${c}" class="${c === cur ? 'on' : ''}" style="background:#${c.toString(16).padStart(6, '0')}"></button>`).join('')}</div>`;
+        body.innerHTML = `<div class="tcard"><b>Cab paint</b>${sw(PAINTS, g.color, 'c')}</div><div class="tcard"><b>Stripes and trim</b>${sw(ACCENTS, g.accent, 'a')}</div><div class="meta" style="padding:4px 2px">Paint jobs are free at any depot.</div>`;
+        body.querySelectorAll<HTMLElement>('[data-c]').forEach((b) => b.addEventListener('click', () => { this.act.setColor(Number(b.dataset.c)); render(); }));
+        body.querySelectorAll<HTMLElement>('[data-a]').forEach((b) => b.addEventListener('click', () => { this.act.setAccent(Number(b.dataset.a)); render(); }));
+      }
+    };
+    el.querySelectorAll<HTMLElement>('[data-t]').forEach((b) => b.addEventListener('click', () => {
+      tab = b.dataset.t as typeof tab;
+      el.querySelectorAll('[data-t]').forEach((x) => x.classList.toggle('on', x === b));
+      if (previewing != null) { previewing = null; this.act.preview(null); }
+      render();
+    }));
+    el.querySelector('.x')!.addEventListener('click', () => { this.act.preview(null); this.act.garage(false); this.close(); });
+    render();
+    this.open(el);
+    this.act.garage(true);
   }
 
   showMenu(fromTitle = false) {

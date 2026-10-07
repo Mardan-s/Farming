@@ -3,6 +3,7 @@ import { TERRAIN_CELL, TERRAIN_HALF, TERRAIN_RES, World } from '../sim/world';
 import { CARRIAGE_OUT } from '../sim/road';
 import { fbm, mulberry32, ridged, smoothstep } from '../util';
 import { fieldTexture, groundDetail, waterNormal } from './textures';
+import { withCloudShadows } from './cloudShadows';
 
 // Terrain (chunked for culling), farm fields, lakes, round bales and the distant mountain ring.
 
@@ -27,11 +28,21 @@ export class Landscape {
     const detail = groundDetail();
     const terrainMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: detail.map, normalMap: detail.normal, normalScale: new THREE.Vector2(0.55, 0.55), roughness: 0.96, metalness: 0 });
     detailShader(terrainMat);
+    withCloudShadows(terrainMat);
     this.buildTerrain(terrainMat);
     this.buildFields();
     this.buildLakes();
     this.buildMountains();
     this.buildBales();
+  }
+
+  /** Crop colour at a point (linear), for the swaying crop carpet. */
+  cropColor(x: number, z: number, out: THREE.Color) {
+    const i = (x + TERRAIN_HALF) / TERRAIN_CELL, j = (z + TERRAIN_HALF) / TERRAIN_CELL;
+    const f = this.world.fields.find((f) => i >= f.i0 - 1 && i <= f.i1 + 1 && j >= f.j0 - 1 && j <= f.j1 + 1);
+    const c: Record<string, [number, number, number]> = { wheat: [0.42, 0.3, 0.1], rapeseed: [0.62, 0.52, 0.04], green: [0.08, 0.17, 0.04], sunflower: [0.09, 0.15, 0.04] };
+    const v = f ? c[f.kind] ?? c.green : c.green;
+    return out.setRGB(v[0], v[1], v[2]);
   }
 
   /** Ground colour at a point, used to tint the grass so it matches the terrain beneath. */
@@ -136,7 +147,7 @@ export class Landscape {
       list.push(g);
     }
     for (const [kind, list] of byKind) {
-      const mat = new THREE.MeshStandardMaterial({ map: fieldTexture(kind), roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+      const mat = withCloudShadows(new THREE.MeshStandardMaterial({ map: fieldTexture(kind), roughness: 0.92, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
       for (const g of list) {
         const m = new THREE.Mesh(g, mat);
         m.receiveShadow = true;
@@ -149,6 +160,7 @@ export class Landscape {
     this.waterNormal = waterNormal();
     this.waterNormal.repeat.set(10, 10);
     const mat = new THREE.MeshStandardMaterial({ color: 0x0b2a33, roughness: 0.06, metalness: 0.1, normalMap: this.waterNormal, normalScale: new THREE.Vector2(0.35, 0.35), envMapIntensity: 1.3 });
+    this.buildRiver(mat);
     for (const lk of this.world.lakes) {
       const m = new THREE.Mesh(new THREE.CircleGeometry(lk.r * 1.32, 64), mat);
       m.rotation.x = -Math.PI / 2;
@@ -159,22 +171,46 @@ export class Landscape {
     }
   }
 
+  /** The river winding along the valley floor under the viaduct. */
+  private buildRiver(mat: THREE.Material) {
+    const r = this.world.river;
+    const len = Math.hypot(r.x1 - r.x0, r.z1 - r.z0) - 120;
+    const g = new THREE.PlaneGeometry(len, 34, 120, 1);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) p.setY(i, p.getY(i) + Math.sin(p.getX(i) / 90) * 12);
+    const m = new THREE.Mesh(g, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.rotation.z = -Math.atan2(r.z1 - r.z0, r.x1 - r.x0);
+    m.position.set((r.x0 + r.x1) / 2 + ((r.x1 - r.x0) / Math.hypot(r.x1 - r.x0, r.z1 - r.z0)) * 60, r.level, (r.z0 + r.z1) / 2 + ((r.z1 - r.z0) / Math.hypot(r.x1 - r.x0, r.z1 - r.z0)) * 60);
+    this.group.add(m);
+  }
+
   private buildMountains() {
-    const segA = 220, segR = 26, r0 = 2300, r1 = 6200;
-    const pos: number[] = [], colr: number[] = [], idx: number[] = [];
+    const segA = 512, segR = 44, r0 = 2300, r1 = 6400;
+    const pos: number[] = [], colr: number[] = [], uv: number[] = [], idx: number[] = [];
     const c = new THREE.Color();
+    const hAt = (a: number, t: number) => {
+      // Big massifs (low-frequency) carved by sharper ridges, with eroded valleys between.
+      const ax = Math.cos(a), az = Math.sin(a);
+      const massif = fbm(ax * 1.6 + 3, az * 1.6 + t * 0.8, 3, 11) * 0.5 + 0.5;
+      const ridge = ridged(ax * 4.2 + 10, az * 4.2 + t * 2.2, 5, 7);
+      const rise = smoothstep(0, 0.3, t) * (1 - smoothstep(0.8, 1, t) * 0.4);
+      return 40 + rise * (120 + massif * 520 + ridge * massif * 520);
+    };
     for (let j = 0; j <= segR; j++) {
-      const t = j / segR, r = r0 + (r1 - r0) * t;
+      const t = (j / segR) ** 1.3, r = r0 + (r1 - r0) * t;
       for (let i = 0; i <= segA; i++) {
         const a = (i / segA) * Math.PI * 2;
         const x = Math.cos(a) * r, z = Math.sin(a) * r;
-        const ridge = ridged(Math.cos(a) * 3.2 + 10, Math.sin(a) * 3.2 + t * 2.5, 5, 7);
-        const rise = smoothstep(0, 0.35, t) * (1 - smoothstep(0.75, 1, t) * 0.55);
-        const h = 40 + rise * (220 + ridge * 720) + fbm(x / 300, z / 300, 3, 8) * 40;
+        const h = hAt(a, t) + fbm(x / 160, z / 160, 3, 8) * 25 * smoothstep(0, 0.3, t);
         pos.push(x, h, z);
-        const snow = smoothstep(430, 620, h);
-        const rock = smoothstep(180, 320, h);
-        c.setRGB(0.07, 0.12, 0.05).lerp(new THREE.Color(0.17, 0.16, 0.15), rock).lerp(new THREE.Color(0.9, 0.92, 0.96), snow);
+        uv.push(x / 60, z / 60);
+        // Slope from neighbouring samples decides forest, rock and snow.
+        const hn = hAt(a + 0.012, t), hr = hAt(a, Math.min(1, t + 0.03));
+        const slope = Math.min(1, (Math.abs(hn - h) / (r * 0.012) + Math.abs(hr - h) / ((r1 - r0) * 0.03)) * 0.6);
+        const snow = smoothstep(420, 560, h) * (1 - smoothstep(0.75, 1, slope) * 0.7);
+        const rock = Math.max(smoothstep(200, 330, h), smoothstep(0.45, 0.8, slope));
+        c.setRGB(0.045, 0.085, 0.035).lerp(new THREE.Color(0.15, 0.14, 0.13), rock).lerp(new THREE.Color(0.85, 0.88, 0.93), snow);
         colr.push(c.r, c.g, c.b);
       }
     }
@@ -185,9 +221,14 @@ export class Landscape {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0 }));
+    const detail = groundDetail();
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, map: detail.map });
+    detailShader(mat);
+    const m = new THREE.Mesh(g, withCloudShadows(mat));
+    m.receiveShadow = false;
     this.group.add(m);
   }
 

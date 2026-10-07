@@ -1,3 +1,5 @@
+import { Radio } from './radio';
+
 // Synthesised sound: a six-cylinder diesel with turbo whistle, wind and tyre roar, air horn,
 // air-brake hiss, indicator ticks, rain, crashes and a cash register for deliveries.
 
@@ -11,6 +13,10 @@ export class Audio {
   private horn: GainNode | null = null;
   private noise!: AudioBuffer;
   volume = 0.8;
+  /** Six for the straight-sixes, eight for the V8. */
+  cylinders = 6;
+  bigHorn = false;
+  private hornOscs: OscillatorNode[] = [];
   private tick = 0;
   private lastBrake = 0;
 
@@ -45,10 +51,13 @@ export class Audio {
     // Air horn: two detuned sawtooths.
     const hg = ctx.createGain(); hg.gain.value = 0;
     const hf = ctx.createBiquadFilter(); hf.type = 'lowpass'; hf.frequency.value = 1800;
-    for (const f of [185, 233, 277]) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.connect(hf); o.start(); }
+    for (const f of [185, 233, 277]) { const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f; o.connect(hf); o.start(); this.hornOscs.push(o); }
     hf.connect(hg).connect(this.master);
     this.horn = hg;
+    this.radio = new Radio(ctx, this.master);
   }
+
+  radio: Radio | null = null;
 
   private noiseVoice(type: BiquadFilterType, freq: number, q: number, level: number) {
     const ctx = this.ctx!;
@@ -82,7 +91,7 @@ export class Audio {
     const ctx = this.ctx;
     if (!ctx || !this.engine) return;
     const t = ctx.currentTime;
-    const fire = (s.rpm / 60) * 3; // six cylinders, four-stroke
+    const fire = (s.rpm / 60) * (this.cylinders / 2); // four-stroke: half the cylinders fire per revolution
     this.engine.oscs[0].frequency.setTargetAtTime(fire, t, 0.04);
     this.engine.oscs[1].frequency.setTargetAtTime(fire / 2, t, 0.04);
     this.engine.oscs[2].frequency.setTargetAtTime(fire * 1.5, t, 0.04);
@@ -95,7 +104,11 @@ export class Audio {
     this.road!.gain.gain.setTargetAtTime(Math.min(0.16, spd * 0.006) * (s.interior ? 0.6 : 1), t, 0.2);
     this.road!.filter.frequency.setTargetAtTime(300 + spd * 25, t, 0.2);
     this.rain!.gain.setTargetAtTime(s.rain * 0.06, t, 0.5);
-    this.horn!.gain.setTargetAtTime(s.horn ? 0.12 : 0, t, 0.03);
+    this.horn!.gain.setTargetAtTime(s.horn ? (this.bigHorn ? 0.2 : 0.12) : 0, t, 0.03);
+    // The triple air horn drops a fourth lower and spreads its chord.
+    this.hornOscs.forEach((o, i) => o.frequency.setTargetAtTime((this.bigHorn ? [139, 175, 208] : [185, 233, 277])[i], t, 0.05));
+    // The V8 has a deeper, burbling note.
+    this.engine.oscs[1].frequency.setTargetAtTime(this.cylinders === 8 ? fire / 4 : fire / 2, t, 0.04);
     // Air brakes hiss when the pedal comes up after a firm stop.
     if (this.lastBrake > 0.3 && s.braking < 0.05) this.burst('highpass', 3500, 0.5, 0.18);
     this.lastBrake = s.braking;
@@ -108,6 +121,14 @@ export class Audio {
   crash(strength: number) {
     this.burst('lowpass', 900, 0.5, Math.min(1, 0.3 + strength), -600);
     this.burst('bandpass', 2600, 0.25, Math.min(0.6, strength * 0.6));
+  }
+
+  cameraClick() { this.burst('bandpass', 5000, 0.05, 0.4); }
+
+  /** Clunk of the fifth-wheel jaws locking, then the air lines hissing. */
+  couple() {
+    this.burst('lowpass', 300, 0.25, 0.9, -200);
+    setTimeout(() => this.burst('highpass', 3000, 0.6, 0.15), 350);
   }
 
   shiftHiss() { this.burst('highpass', 4000, 0.18, 0.06, -2000); }

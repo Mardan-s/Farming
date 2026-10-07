@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CARRIAGE_OUT } from '../sim/road';
 import { TERRAIN_CELL, TERRAIN_HALF, TERRAIN_RES, World } from '../sim/world';
 import { mulberry32 } from '../util';
+import { withCloudShadows } from './cloudShadows';
 
 // A carpet of grass tufts that follows the camera. Instances live on a fixed world grid that
 // wraps around the camera, so blades never slide or pop as you drive. The vertex shader lifts
@@ -12,12 +13,25 @@ export class Grass {
   readonly mesh: THREE.Mesh;
   private uniforms: Record<string, THREE.IUniform>;
 
-  constructor(world: World, count: number, tint: (x: number, z: number, out: THREE.Color) => THREE.Color) {
-    const R = Math.sqrt(count * 0.22) / 2;
-    const rnd = mulberry32(21);
-    // One tuft: six slim blades fanned around the centre.
+  constructor(world: World, count: number, tint: (x: number, z: number, out: THREE.Color) => THREE.Color, crops = false) {
+    const R = Math.sqrt(count * (crops ? 0.5 : 0.22)) / 2;
+    const rnd = mulberry32(crops ? 23 : 21);
     const pos: number[] = [], col: number[] = [], nor: number[] = [];
-    for (let b = 0; b < 9; b++) {
+    // Crops: a clump of tall stalks with heavier, brighter heads.
+    if (crops) for (let b = 0; b < 8; b++) {
+      const a = rnd() * Math.PI * 2, r = rnd() * 0.22, h = 0.75 + rnd() * 0.35, w = 0.03;
+      const cx = Math.cos(a) * r, cz = Math.sin(a) * r, lean = 0.04 + rnd() * 0.08;
+      const px = -Math.sin(a) * w, pz = Math.cos(a) * w;
+      // Stalk, then a fatter ear on top.
+      pos.push(cx - px, 0, cz - pz, cx + px, 0, cz + pz, cx + Math.cos(a) * lean * 0.7, h * 0.78, cz + Math.sin(a) * lean * 0.7);
+      col.push(0.45, 0.45, 0.4, 0.45, 0.45, 0.4, 0.95, 0.95, 0.9);
+      const ex = cx + Math.cos(a) * lean * 0.7, ez = cz + Math.sin(a) * lean * 0.7;
+      pos.push(ex - px * 2.2, h * 0.7, ez - pz * 2.2, ex + px * 2.2, h * 0.7, ez + pz * 2.2, cx + Math.cos(a) * lean, h, cz + Math.sin(a) * lean);
+      col.push(1.05, 1.05, 1, 1.05, 1.05, 1, 1.35, 1.3, 1.15);
+      for (let k = 0; k < 6; k++) nor.push(0, 1, 0);
+    }
+    // Grass: nine slim blades fanned around the centre.
+    if (!crops) for (let b = 0; b < 9; b++) {
       const a = (b / 9) * Math.PI * 2 + rnd() * 0.6;
       const r = 0.04 + rnd() * 0.2, h = 0.3 + rnd() * 0.42, w = 0.05 + rnd() * 0.035;
       const cx = Math.cos(a) * r, cz = Math.sin(a) * r;
@@ -45,7 +59,7 @@ export class Grass {
 
     this.uniforms = {
       uCam: { value: new THREE.Vector2() }, uR: { value: R }, uTime: { value: 0 }, uWind: { value: 1 },
-      uHeight: { value: heightTexture(world) }, uMask: { value: maskTexture(world) }, uTint: { value: tintTexture(tint) },
+      uHeight: { value: heightTexture(world) }, uMask: { value: crops ? fieldMask(world) : maskTexture(world) }, uTint: { value: tintTexture(tint) },
       uHalf: { value: TERRAIN_HALF }, uCell: { value: TERRAIN_CELL }, uRes: { value: TERRAIN_RES + 1 },
     };
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
@@ -67,7 +81,7 @@ float s = mask * fade * (0.65 + aOffset.z * 0.7);
 float a = aOffset.z * 6.2831;
 transformed.xz = mat2(cos(a), -sin(a), sin(a), cos(a)) * transformed.xz;
 transformed *= s;
-float sway = sin(uTime * 1.9 + wp.x * 0.27 + wp.y * 0.19) * 0.6 + sin(uTime * 3.3 + wp.x * 0.7) * 0.25;
+float sway = sin(uTime * 1.9 + wp.x * 0.27 + wp.y * 0.19) * 0.6 + sin(uTime * 3.3 + wp.x * 0.7) * 0.25 + sin(uTime * 1.1 + wp.x * 0.06 + wp.y * 0.045) * 0.8;
 transformed.x += sway * 0.18 * uWind * transformed.y;
 transformed.z += cos(uTime * 1.4 + wp.y * 0.3) * 0.1 * uWind * transformed.y;
 vec2 huv = ((wp + uHalf) / uCell + 0.5) / uRes;
@@ -77,6 +91,7 @@ vTint = texture2D(uTint, tuv).rgb;
 `);
       sh.fragmentShader = 'varying vec3 vTint;\n' + sh.fragmentShader.replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= vTint * 0.4;');
     };
+    withCloudShadows(mat);
     this.mesh = new THREE.Mesh(geo, mat);
     this.mesh.frustumCulled = false;
     this.mesh.receiveShadow = true;
@@ -94,6 +109,28 @@ vTint = texture2D(uTint, tuv).rgb;
 }
 
 const fwd = new THREE.Vector3();
+
+/** White where a standing crop grows (not on ploughed or harvested fields). */
+function fieldMask(world: World) {
+  const S = 1024, k = S / (TERRAIN_HALF * 2);
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, S, S);
+  for (const f of world.fields) {
+    if (f.kind === 'plowed' || f.kind === 'stubble') continue;
+    g.fillStyle = f.kind === 'green' ? '#777' : '#fff';
+    const x0 = (f.i0 * TERRAIN_CELL) * k, z0 = (f.j0 * TERRAIN_CELL) * k;
+    g.fillRect(x0 + 2, z0 + 2, (f.i1 - f.i0) * TERRAIN_CELL * k - 4, (f.j1 - f.j0) * TERRAIN_CELL * k - 4);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.NoColorSpace;
+  t.flipY = false;
+  t.minFilter = THREE.LinearFilter;
+  t.generateMipmaps = false;
+  return t;
+}
 
 function heightTexture(world: World) {
   const n = TERRAIN_RES + 1;
@@ -138,6 +175,9 @@ function maskTexture(world: World) {
     g.fillRect(X(x0), X(z0), (f.i1 - f.i0) * TERRAIN_CELL * k, (f.j1 - f.j0) * TERRAIN_CELL * k);
   }
   for (const lk of world.lakes) { g.beginPath(); g.arc(X(lk.x), X(lk.z), lk.r * 1.25 * k, 0, 7); g.fill(); }
+  const rv = world.river;
+  g.lineWidth = 60 * k;
+  g.beginPath(); g.moveTo(X(rv.x0), X(rv.z0)); g.lineTo(X(rv.x1), X(rv.z1)); g.stroke();
   for (const b of world.buildings) {
     g.save(); g.translate(X(b.x), X(b.z)); g.rotate(-b.rot);
     g.fillRect((-b.w / 2 - 1) * k, (-b.d / 2 - 1) * k, (b.w + 2) * k, (b.d + 2) * k);

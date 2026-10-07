@@ -21,13 +21,14 @@ const GradeShader = {
     uGrain: { value: 0.035 },
     uSat: { value: 1.08 },
     uWet: { value: 0 },
+    uRays: { value: 0 },
   },
   vertexShader: /* glsl */ `
 varying vec2 vUv;
 void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */ `
 uniform sampler2D tDiffuse;
-uniform float uTime, uAspect, uSunAmt, uVignette, uCA, uGrain, uSat, uWet;
+uniform float uTime, uAspect, uSunAmt, uVignette, uCA, uGrain, uSat, uWet, uRays;
 uniform vec2 uSun;
 uniform vec3 uSunCol;
 varying vec2 vUv;
@@ -58,6 +59,19 @@ void main() {
     float glare = exp(-length(d) * 7.0) * 0.35;
     fl += vec3(0.6, 0.75, 1.0) * ring + vec3(0.75, 0.85, 1.0) * streak + uSunCol * glare;
     col += fl * uSunAmt;
+  }
+  // God rays: march towards the sun and gather the bright sky showing between trees and peaks.
+  if (uRays > 0.0 && uSunAmt > 0.001) {
+    vec2 stepV = (uSun - vUv) / 22.0;
+    vec2 p = vUv;
+    float acc = 0.0, w = 1.0;
+    for (int i = 0; i < 22; i++) {
+      p += stepV;
+      vec3 s = texture2D(tDiffuse, clamp(p, 0.0, 1.0)).rgb;
+      acc += max(0.0, dot(s, vec3(0.3, 0.55, 0.15)) - 0.7) * w;
+      w *= 0.93;
+    }
+    col += uSunCol * acc * 0.12 * uRays * uSunAmt;
   }
   // Grade: gentle S-curve and saturation.
   float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
@@ -90,6 +104,8 @@ export class Post {
     this.composer.addPass(this.grade);
   }
 
+  rays = 0;
+
   setCamera(camera: THREE.Camera) { this.renderPass.camera = camera; }
 
   setSize(w: number, h: number, pixelRatio: number) {
@@ -107,6 +123,7 @@ export class Post {
     if (sunScreen) (u.uSun.value as THREE.Vector2).copy(sunScreen);
     (u.uSunCol.value as THREE.Color).copy(sunCol);
     u.uWet.value = wet;
+    u.uRays.value = this.rays;
     u.uGrain.value = 0.025 + night * 0.03;
     this.composer.render();
   }

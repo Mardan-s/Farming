@@ -70,6 +70,8 @@ export class Truck {
   latAccel = 0;
   wheelSpin = 0;
   cruise: number | null = null;
+  /** Engine torque multiplier from the truck model and engine tunes. */
+  torqueScale = 1;
   /** Gradient along the heading (rise / run), set by the game from the ground. */
   grade = 0;
   offroad = false;
@@ -149,8 +151,8 @@ export class Truck {
     let drive = 0;
     if (coupled && this.drive !== 'N') {
       const limiter = this.drive === 'D' && v > SPEED_LIMITER ? 0 : 1;
-      const torque = engineTorque(this.rpm) * throttle * limiter;
-      drive = Math.min((torque * ratio * FINAL * 0.9) / WHEEL_R, 72000) * dir;
+      const torque = engineTorque(this.rpm) * this.torqueScale * throttle * limiter;
+      drive = Math.min((torque * ratio * FINAL * 0.9) / WHEEL_R, 72000 * Math.sqrt(this.torqueScale)) * dir;
       // Engine braking when off the throttle in gear.
       if (throttle < 0.05 && Math.abs(v) > 1) drive -= Math.sign(v) * (this.rpm / RED) * 9000;
     }

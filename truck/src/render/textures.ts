@@ -467,3 +467,31 @@ export function plateTexture(text: string) {
   g.fillText(text, 42, H / 2 + 2);
   return tex(c, true, false);
 }
+
+/** Cab side decal: sweeping accent stripes and the model name, on a transparent background. */
+export function cabDecal(name: string, accent: number) {
+  const W = 512, H = 160;
+  const [c, g] = canvas(W, H);
+  const col = '#' + accent.toString(16).padStart(6, '0');
+  g.fillStyle = col;
+  g.beginPath(); g.moveTo(0, H * 0.62); g.lineTo(W, H * 0.3); g.lineTo(W, H * 0.42); g.lineTo(0, H * 0.78); g.fill();
+  g.globalAlpha = 0.55;
+  g.beginPath(); g.moveTo(0, H * 0.84); g.lineTo(W, H * 0.5); g.lineTo(W, H * 0.55); g.lineTo(0, H * 0.9); g.fill();
+  g.globalAlpha = 1;
+  g.font = `800 ${H * 0.2}px "Barlow Condensed", Impact, sans-serif`;
+  g.textBaseline = 'middle';
+  g.fillText(name.toUpperCase(), W * 0.56, H * 0.2);
+  return tex(c, true, false);
+}
+
+/** Grille mesh pattern (dark honeycomb) for the cab front. */
+export function grilleTexture() {
+  const W = 256, H = 128;
+  const [c, g] = canvas(W, H);
+  g.fillStyle = '#0b0c0e'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = '#2b2e33'; g.lineWidth = 2;
+  for (let y = 0; y < H + 8; y += 8) for (let x = (y / 8) % 2 ? 4 : 0; x < W + 8; x += 8) { g.beginPath(); g.arc(x, y, 3, 0, 7); g.stroke(); }
+  const t = tex(c, true, true);
+  t.repeat.set(3, 2);
+  return t;
+}

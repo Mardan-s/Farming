@@ -21,7 +21,8 @@ export function yardProps(d: Depot): YardProp[] {
   const props: YardProp[] = [];
   const bays = bayOffsets(d);
   props.push({ kind: 'trailer', s: d.s + bays[0], lat: d.bayLat, trailer: kinds[d.id % 4], livery: d.id + 1 });
-  props.push({ kind: 'trailer', s: d.s + bays[2], lat: d.bayLat, trailer: kinds[(d.id + 2) % 4], livery: d.id + 3 });
+  // The bay ahead of the delivery bay stays clear so you have room to line up and reverse in.
+  props.push({ kind: 'trailer', s: d.s + bays[2] + 4, lat: d.bayLat - 15, trailer: kinds[(d.id + 2) % 4], livery: d.id + 3 });
   if (d.fuel) {
     const s = d.s - d.sHalf + 15, lat = CARRIAGE_OUT + 13;
     props.push({ kind: 'canopy', s, lat });

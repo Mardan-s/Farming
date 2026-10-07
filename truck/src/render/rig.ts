@@ -3,7 +3,8 @@ import type { TrailerKind } from '../sim/jobs';
 import { HITCH_AHEAD, TRAILER_LEN, Truck, WHEELBASE } from '../sim/truck';
 import type { World } from '../sim/world';
 import { clamp, damp } from '../util';
-import { MAT, paint } from './materials';
+import { MAT } from './materials';
+import type { TruckLook } from '../sim/trucks';
 import { LightState, Trailer, Tractor, applyLights, buildTrailer, buildTractor } from './vehicles';
 import type { Particles } from './fx';
 
@@ -27,11 +28,11 @@ function beamTexture() {
 }
 
 export class RigView {
-  readonly tractor: Tractor;
+  tractor!: Tractor;
   trailer: Trailer | null = null;
   private parked: Trailer | null = null;
   private cabPivot = new THREE.Group();
-  readonly heads: THREE.SpotLight[] = [];
+  heads: THREE.SpotLight[] = [];
   private beams: THREE.Mesh[] = [];
   private beamMat: THREE.MeshBasicMaterial;
   private blink = 0;
@@ -43,21 +44,39 @@ export class RigView {
   /** Cab-local eye position for the driver's view. */
   readonly eye = new THREE.Object3D();
   private v = new THREE.Vector3();
+  /** A trailer standing in the yard waiting to be coupled. */
+  pickup: { x: number; z: number; heading: number } | null = null;
 
-  constructor(private scene: THREE.Scene, private world: World, color: number, headlights: number) {
-    this.tractor = buildTractor(color, { interior: true, plate: 'EH·2026' });
+  constructor(private scene: THREE.Scene, private world: World, look: TruckLook, private headlights: number, mirrorRes = 0) {
+    this.mirrorRes = mirrorRes;
+    this.beamMat = new THREE.MeshBasicMaterial({ map: beamTexture(), color: 0xfff0d8, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
+    this.dashCanvas = document.createElement('canvas');
+    this.dashCanvas.width = 512; this.dashCanvas.height = 200;
+    this.dashTex = new THREE.CanvasTexture(this.dashCanvas);
+    this.dashTex.colorSpace = THREE.SRGBColorSpace;
+    this.fit(look);
+  }
+
+  /** Builds (or rebuilds, after a purchase or new paint) the player's tractor. */
+  fit(look: TruckLook) {
+    const old = this.tractor;
+    const pose = old ? { p: old.root.position.clone(), r: old.root.rotation.clone() } : null;
+    if (old) { this.scene.remove(old.root); dispose(old.root); }
+    this.tractor = buildTractor(look, { interior: true, plate: 'EH·2026' });
+    if (pose) { this.tractor.root.position.copy(pose.p); this.tractor.root.rotation.copy(pose.r); }
     // Re-pivot the cab around its floor so pitch and roll look like cab suspension.
     const cab = this.tractor.cab;
+    this.cabPivot = new THREE.Group();
     this.tractor.root.add(this.cabPivot);
     this.cabPivot.position.set(0, 1.25, 3.9);
     this.cabPivot.add(cab);
     cab.position.set(0, -1.25, -3.9);
     this.eye.position.set(0.62, 2.98, 4.05);
     cab.add(this.eye);
-    scene.add(this.tractor.root);
-
-    this.beamMat = new THREE.MeshBasicMaterial({ map: beamTexture(), color: 0xfff0d8, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
-    const offsets = headlights >= 2 ? [0.86, -0.86] : headlights === 1 ? [0] : [];
+    this.scene.add(this.tractor.root);
+    this.heads = [];
+    this.beams = [];
+    const offsets = this.headlights >= 2 ? [0.86, -0.86] : this.headlights === 1 ? [0] : [];
     for (const x of offsets) {
       const l = new THREE.SpotLight(0xfff1dc, 0, 170, 0.4, 0.75, 1.0);
       l.position.set(x, 1.55, 5.35);
@@ -72,12 +91,48 @@ export class RigView {
       cab.add(beam);
       this.beams.push(beam);
     }
-
-    this.dashCanvas = document.createElement('canvas');
-    this.dashCanvas.width = 512; this.dashCanvas.height = 200;
-    this.dashTex = new THREE.CanvasTexture(this.dashCanvas);
-    this.dashTex.colorSpace = THREE.SRGBColorSpace;
     if (this.tractor.dashScreen) (this.tractor.dashScreen.material as THREE.MeshBasicMaterial).map = this.dashTex;
+    // Live rear-view mirrors: a small camera at each main mirror renders into the glass.
+    this.mirrors = [];
+    if (this.mirrorRes) {
+      const winY = 1.25 + 1.15 + ([2.6, 2.85, 3.0][this.tractor.model] - 1.15) * 0.42 + 0.02;
+      for (const side of [1, -1]) {
+        const rt = new THREE.WebGLRenderTarget(this.mirrorRes, Math.round(this.mirrorRes * 2.6), { type: THREE.HalfFloatType });
+        rt.texture.repeat.set(-1, 1);
+        rt.texture.offset.set(1, 0);
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.58), new THREE.MeshBasicMaterial({ map: rt.texture }));
+        screen.position.set(side * 1.66, winY + 0.05, 4.878);
+        screen.rotation.y = Math.PI;
+        screen.visible = false;
+        cab.add(screen);
+        const c = new THREE.PerspectiveCamera(26, 0.18 / 0.58, 0.5, 900);
+        c.position.set(side * 1.7, winY + 0.05, 4.85);
+        c.lookAt(new THREE.Vector3(side * 2.15, winY - 0.6, -10));
+        cab.add(c);
+        this.mirrors.push({ rt, screen, cam: c });
+      }
+    }
+    this.setInterior(this.interiorView);
+  }
+
+  /** Resolution of the live mirrors (0 = off). */
+  mirrorRes = 0;
+  private mirrors: { rt: THREE.WebGLRenderTarget; screen: THREE.Mesh; cam: THREE.PerspectiveCamera }[] = [];
+  private mirrorFrame = 0;
+
+  /** Renders one mirror per frame, alternating sides, when you're in the cab. */
+  renderMirrors(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
+    if (!this.interiorView || !this.mirrors.length) return;
+    const m = this.mirrors[this.mirrorFrame++ % this.mirrors.length];
+    const prevTarget = renderer.getRenderTarget();
+    const autoShadow = renderer.shadowMap.autoUpdate;
+    renderer.shadowMap.autoUpdate = false;
+    for (const x of this.mirrors) x.screen.visible = false;
+    renderer.setRenderTarget(m.rt);
+    renderer.render(scene, m.cam);
+    renderer.setRenderTarget(prevTarget);
+    renderer.shadowMap.autoUpdate = autoShadow;
+    for (const x of this.mirrors) x.screen.visible = true;
   }
 
   setTrailer(kind: TrailerKind | null, livery = 0) {
@@ -93,17 +148,12 @@ export class RigView {
     this.trailer = null;
   }
 
-  repaint(color: number) {
-    const old = this.tractor.paintMat;
-    const next = paint(color, 0.45, 0.28);
-    this.tractor.root.traverse((o) => { if (o instanceof THREE.Mesh && o.material === old) o.material = next; });
-    this.tractor.paintMat = next;
-  }
-
   setInterior(on: boolean) {
     this.interiorView = on;
-    for (const g of this.tractor.glass) g.material = on ? MAT.glassInside : MAT.glass;
+    for (const g of this.tractor.glass) g.material = on ? MAT.glassInside : MAT.glassCab;
     for (const b of this.beams) b.visible = !on;
+    for (const m of this.mirrors ?? []) m.screen.visible = on;
+    for (const o of this.tractor.exterior) o.visible = !on;
   }
 
   update(dt: number, time: number, t: Truck, lights: LightState, night: number, fog: number, fx: { smoke: Particles; spray: Particles }, wet: number) {
@@ -126,8 +176,15 @@ export class RigView {
     const sw = this.tractor.steeringWheel.children[0];
     if (sw) sw.rotation.z = t.wheelAngle * 15;
 
+    // --- an uncoupled trailer stands level on its landing legs
+    if (this.trailer && !t.hasTrailer && this.pickup) {
+      const tr = this.trailer.root, p = this.pickup;
+      tr.position.set(p.x, w.groundHeight(p.x, p.z), p.z);
+      tr.rotation.set(0, p.heading, 0);
+      applyLights(this.trailer.lights, { head: false, high: false, brake: 0, tail: false, indL: false, indR: false, reverse: false, roof: false }, night);
+    }
     // --- trailer hangs off the fifth wheel
-    if (this.trailer) {
+    if (this.trailer && t.hasTrailer) {
       const tr = this.trailer.root;
       root.updateMatrixWorld(true);
       const king = this.v.set(0, 1.22, HITCH_AHEAD).applyMatrix4(root.matrixWorld);

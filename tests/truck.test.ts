@@ -4,6 +4,7 @@ import { Truck } from '../truck/src/sim/truck';
 import { jobOffers, levelFor, settle } from '../truck/src/sim/jobs';
 import { Traffic } from '../truck/src/sim/traffic';
 import { World } from '../truck/src/sim/world';
+import { Game } from '../truck/src/sim/game';
 
 const world = new World(11, 1500);
 const road = world.road;
@@ -41,6 +42,8 @@ describe('world', () => {
   it('keeps the terrain just under the asphalt and depot yards', () => {
     const p = { x: 0, y: 0, z: 0 };
     for (let s = 0; s < road.length; s += 97) {
+      // The viaduct spans a valley, so the ground there is far below the deck.
+      if (Math.abs(road.delta(world.river.s, s)) < world.bridgeHalf + 5) continue;
       for (const lat of [-CARRIAGE_OUT, -4, 4, CARRIAGE_OUT]) {
         road.toWorld(s, lat, p);
         const t = world.terrainHeight(p.x, p.z);
@@ -53,6 +56,12 @@ describe('world', () => {
       expect(world.depotAt(d.bayS, d.bayLat)).toBe(d);
       expect(world.groundHeight(p.x, p.z)).toBeCloseTo(road.heightAt(d.bayS), 1);
     }
+  });
+
+  it('drops the valley well below the viaduct deck', () => {
+    const p = road.toWorld(world.river.s, 0, { x: 0, y: 0, z: 0 });
+    expect(p.y - world.terrainHeight(p.x, p.z)).toBeGreaterThan(15);
+    expect(world.groundHeight(p.x, p.z)).toBeCloseTo(p.y, 1);
   });
 
   it('keeps trees and buildings off the road', () => {
@@ -159,5 +168,49 @@ describe('game', () => {
     t.grade = 0.05;
     for (let i = 0; i < 90; i++) t.update(1 / 30, { throttle: 0, brake: 0, steer: 0, handbrake: false });
     expect(Math.abs(t.speed)).toBeLessThan(0.01);
+  });
+});
+
+describe('coupling', () => {
+  const ev = { toast() {}, crash() {}, scrape() {}, delivered() {}, arrived() {}, coupled() {}, trailerReady() {}, speedCam() {} };
+
+  it('couples when you reverse squarely under the waiting trailer', () => {
+    const g = new Game(world, 4, ev);
+    g.accept(g.offers[0]);
+    expect(g.truck.hasTrailer).toBe(false);
+    const p = g.pickup!;
+    const kx = p.x + Math.sin(p.heading) * 10.4, kz = p.z + Math.cos(p.heading) * 10.4;
+    g.truck.place(kx + Math.sin(p.heading) * 6, kz + Math.cos(p.heading) * 6, p.heading);
+    g.truck.drive = 'R';
+    for (let i = 0; i < 30 * 15 && !g.truck.hasTrailer; i++) g.update(1 / 30, { throttle: 0.35, brake: 0, steer: 0, handbrake: false });
+    expect(g.truck.hasTrailer).toBe(true);
+    expect(g.pickup).toBeNull();
+    expect(g.truck.cargoMass).toBe(g.job!.mass);
+  });
+
+  it('lets the yard crew couple it for a fee', () => {
+    const g = new Game(world, 4, ev);
+    g.money = 1000;
+    g.accept(g.offers[1]);
+    g.crewCouple();
+    expect(g.truck.hasTrailer).toBe(true);
+    expect(g.money).toBe(850);
+  });
+});
+
+describe('speed cameras', () => {
+  it('fines you for speeding through a town zone', () => {
+    let fined = 0;
+    const g = new Game(world, 0, { toast() {}, crash() {}, scrape() {}, delivered() {}, arrived() {}, coupled() {}, trailerReady() {}, speedCam: (_k, _l, f) => { fined = f; } });
+    const cs = world.speedCameras[1];
+    const p = road.toWorld(cs - 60, 7.375, { x: 0, y: 0, z: 0 });
+    const t = road.sample(cs - 60, { x: 0, y: 0, z: 0, tx: 0, tz: 1 });
+    g.truck.place(p.x, p.z, Math.atan2(t.tx, t.tz));
+    g.truck.speed = 25;
+    g.truck.gear = 12;
+    const before = g.money;
+    for (let i = 0; i < 30 * 4; i++) g.update(1 / 30, { throttle: 1, brake: 0, steer: 0, handbrake: false });
+    expect(fined).toBeGreaterThan(0);
+    expect(g.money).toBeLessThan(before);
   });
 });

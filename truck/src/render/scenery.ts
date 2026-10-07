@@ -3,6 +3,8 @@ import type { Building, World } from '../sim/world';
 import { TERRAIN_HALF } from '../sim/world';
 import { mulberry32 } from '../util';
 import { corrugated, facade, leafTexture } from './textures';
+import { withCloudShadows } from './cloudShadows';
+import { foliageAtlas, leafyBroadleaf, leafyBush, leafyConifer, leafyPoplar } from './trees';
 
 // Forests (instanced, chunked for culling, swaying in the wind), towns (merged into a few big
 // meshes with windows that light up at night) and wind turbines with turning rotors.
@@ -181,22 +183,28 @@ function toGeo(o: GeoParts) {
 
 export class Scenery {
   readonly group = new THREE.Group();
-  private treeChunks: { mesh: THREE.InstancedMesh; cx: number; cz: number }[] = [];
+  private treeChunks: { far: THREE.InstancedMesh; near: THREE.InstancedMesh | null; cx: number; cz: number; half: number }[] = [];
   private windowMat: THREE.MeshStandardMaterial;
   private rotors: THREE.InstancedMesh | null = null;
   private blink: THREE.MeshStandardMaterial;
 
-  constructor(private world: World, lowDetail: boolean) {
-    this.buildTrees(lowDetail ? 0 : 1);
+  constructor(private world: World, lowDetail: boolean, msaa = false) {
+    this.buildTrees(lowDetail ? 0 : 1, !lowDetail, msaa);
     this.windowMat = this.buildTowns();
     this.blink = new THREE.MeshStandardMaterial({ color: 0x330000, emissive: 0xff1010, emissiveIntensity: 0 });
     this.buildTurbines();
   }
 
-  private buildTrees(detail: number) {
-    const geos = [conifer(3), broadleaf(5, detail), poplar(7, detail)];
-    const mat = windy(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0, map: leafTexture() }));
-    const CELLS = 6, size = (TERRAIN_HALF * 2) / CELLS;
+  private buildTrees(detail: number, leafy: boolean, coverage: boolean) {
+    const bushFar = new THREE.IcosahedronGeometry(1.1, 0);
+    bushFar.scale(1, 0.75, 1);
+    bushFar.translate(0, 0.75, 0);
+    colorize(bushFar, (_x, y, _z, c) => c.setRGB(0.04 + y * 0.02, 0.08 + y * 0.03, 0.03));
+    const farGeos = [conifer(3), broadleaf(5, detail), poplar(7, detail), bushFar];
+    const farMat = windy(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.82, metalness: 0, map: leafTexture() }));
+    const nearGeos = leafy ? [leafyConifer(3), leafyBroadleaf(5), leafyPoplar(7), leafyBush(9)] : null;
+    const nearMat = leafy ? windy(new THREE.MeshStandardMaterial({ vertexColors: true, map: foliageAtlas(), alphaTest: 0.45, alphaToCoverage: coverage, side: THREE.DoubleSide, roughness: 0.78, metalness: 0 })) : null;
+    const CELLS = 8, size = (TERRAIN_HALF * 2) / CELLS;
     const buckets = new Map<string, typeof this.world.trees>();
     for (const t of this.world.trees) {
       const ci = Math.min(CELLS - 1, Math.floor((t.x + TERRAIN_HALF) / size)), cj = Math.min(CELLS - 1, Math.floor((t.z + TERRAIN_HALF) / size));
@@ -207,26 +215,32 @@ export class Scenery {
     }
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
     const col = new THREE.Color();
-    const rnd = mulberry32(99);
-    for (const [key, list] of buckets) {
-      const [ci, cj, kind] = key.split(',').map(Number);
-      const mesh = new THREE.InstancedMesh(geos[kind], mat, list.length);
+    const make = (geo: THREE.BufferGeometry, mat: THREE.Material, list: typeof this.world.trees, kind: number) => {
+      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+      const r2 = mulberry32(list.length * 13 + kind);
       list.forEach((t, i) => {
         q.setFromAxisAngle(up, t.rot);
-        const sx = t.s * (0.9 + rnd() * 0.2);
+        const sx = t.s * (0.9 + r2() * 0.2);
         s.set(sx, t.s, sx);
         p.set(t.x, t.y - 0.3, t.z);
         mesh.setMatrixAt(i, m.compose(p, q, s));
-        const v = 0.8 + rnd() * 0.4;
-        col.setRGB(v * (0.95 + rnd() * 0.15), v, v * (0.9 + rnd() * 0.1));
-        if (kind === 1 && rnd() < 0.12) col.setRGB(1.5, 1.15, 0.6); // the odd early-autumn tree
+        const v = 0.8 + r2() * 0.4;
+        col.setRGB(v * (0.95 + r2() * 0.15), v, v * (0.9 + r2() * 0.1));
+        if (kind === 1 && r2() < 0.12) col.setRGB(1.5, 1.15, 0.6); // the odd early-autumn tree
         mesh.setColorAt(i, col);
       });
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.computeBoundingSphere();
       this.group.add(mesh);
-      this.treeChunks.push({ mesh, cx: -TERRAIN_HALF + (ci + 0.5) * size, cz: -TERRAIN_HALF + (cj + 0.5) * size });
+      return mesh;
+    };
+    for (const [key, list] of buckets) {
+      const [ci, cj, kind] = key.split(',').map(Number);
+      const far = make(farGeos[kind], farMat, list, kind);
+      const near = nearGeos && nearMat ? make(nearGeos[kind], nearMat, list, kind) : null;
+      if (near) near.visible = false;
+      this.treeChunks.push({ far, near, cx: -TERRAIN_HALF + (ci + 0.5) * size, cz: -TERRAIN_HALF + (cj + 0.5) * size, half: size / 2 });
     }
   }
 
@@ -235,8 +249,8 @@ export class Scenery {
     const tmp = new THREE.Color();
     for (const b of this.world.buildings) this.building(b, walls, roofs, metal, plain, tmp);
     const facadeMap = facade(false), litMap = facade(true);
-    const wallMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: facadeMap, emissive: 0xffffff, emissiveMap: litMap, emissiveIntensity: 0, roughness: 0.85 });
-    const roofMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.05 });
+    const wallMat = withCloudShadows(new THREE.MeshStandardMaterial({ vertexColors: true, map: facadeMap, emissive: 0xffffff, emissiveMap: litMap, emissiveIntensity: 0, roughness: 0.85 }));
+    const roofMat = withCloudShadows(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.05 }));
     const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: corrugated('#d8dce0'), roughness: 0.5, metalness: 0.15 });
     const plainMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: corrugated('#ffffff', 64), roughness: 0.9 });
     for (const [o, mat] of [[walls, wallMat], [roofs, roofMat], [metal, metalMat], [plain, plainMat]] as const) {
@@ -391,8 +405,12 @@ export class Scenery {
     this.blink.emissiveIntensity = night > 0.2 && Math.sin(time * 3) > 0.6 ? 8 : 0;
     this.updateRotors(time);
     for (const c of this.treeChunks) {
-      const d = Math.hypot(c.cx - cam.x, c.cz - cam.z);
-      c.mesh.visible = d < 2700;
+      // Distance to the chunk's nearest edge: leafy cards up close, solid crowns further out.
+      const dx = Math.max(0, Math.abs(c.cx - cam.x) - c.half), dz = Math.max(0, Math.abs(c.cz - cam.z) - c.half);
+      const d = Math.hypot(dx, dz);
+      const near = !!c.near && d < 260;
+      if (c.near) c.near.visible = near;
+      c.far.visible = !near && d < 2500;
     }
   }
 }

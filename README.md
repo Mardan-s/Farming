@@ -68,19 +68,25 @@ tests/         Vitest tests, including a headless full farming loop
 
 A second game lives in `truck/`: **Euro Haul**, a mobile-first truck driving sim in the spirit of Euro Truck Simulator. Haul freight along an Alpine motorway loop between five depots (Valmont, Nordhaven, Rivabella, Brennwald, Lac Doré).
 
-**How to play.** Pick a job on the depot's job board: cargo, weight, destination, pay and time limit. A matching trailer is coupled (curtain-sider, reefer, container or tanker). Drive to the destination, where a glowing bay and a light beam mark the spot. Stop anywhere in the yard and tap **Deliver**, or back the trailer neatly into the bay for a 10% parking bonus. Damage (barrier hits, crashes) and lateness cut the pay, and fragile cargo is extra sensitive. Collisions with traffic also cost a fine. Refuel and repair at depots.
+**How to play.** Pick a job on the depot's job board: cargo, weight, destination, pay and time limit. The loaded trailer (curtain-sider, reefer, container or tanker) waits in a green-lit bay: reverse squarely under it and the fifth wheel locks on (or pay the yard crew €150 to do it). Drive to the destination, where an orange bay and a light beam mark the spot. Stop anywhere in the yard and tap **Deliver**, or back the trailer neatly into the bay for a 10% parking bonus. Damage (barrier hits, crashes) and lateness cut the pay, and fragile cargo is extra sensitive. Collisions with traffic also cost a fine, and speed cameras guard the 80 km/h zones through each town. Refuel and repair at depots.
+
+**Garage.** Save up for the **Titan 580** (€32,000) and the **Apex V8 750** (€78,000), each with its own cab, grille, power and engine sound. Fit engine tunes, a chrome pack, a roof light bar and a triple air horn, and repaint the cab and stripes at any depot.
+
+**Radio.** Three stations of music generated live in the browser: Alpen FM (lo-fi), Autobahn Wave (synthwave) and Route 66 (blues). It plays clear in the cab and muffled outside.
 
 **Controls (touch).** An on-screen steering wheel you turn with a finger (or **Tilt** or **Buttons** steering in Settings), **GAS** and **BRAKE** pedals, **R/N/D**, headlights (auto, on, high beam, off), horn, cruise control, indicators and hazards. Drag the view to look around and pinch to zoom. The camera button cycles chase, cab (live dashboard gauges), cinematic TV shots and wheel cam. **Keyboard:** WASD/arrows, Space handbrake, R/N/F gears, C camera, L lights, H horn, K cruise, Q/E indicators, Esc menu.
 
 **Driving model.** A 460 hp-class diesel torque curve, 12-speed automated gearbox with skip-shifts, air brakes, engine braking, hill hold, a 90 km/h speed limiter, aero drag, rolling resistance and real hill grades (heavy loads slow down on climbs). The trailer is a kinematic articulated model, so it cuts corners and jack-knifes if you reverse carelessly. Speed-dependent steering lock keeps highway driving stable.
 
 **World and graphics.** Everything is generated at startup, with no asset files:
-- 8.5 km dual-carriageway loop with lane markings, a concrete median barrier, guard rails, delineators, street lights near towns, overhead exit gantries and speed signs
+- 8.5 km dual-carriageway loop with lane markings, a concrete median barrier, guard rails, delineators, street lights near towns, overhead exit gantries, speed signs and speed cameras, and a tall viaduct over a river gorge
 - Terrain with fields (wheat, rapeseed, sunflowers…), lakes, forests, hedgerows, wind turbines, towns with churches and apartment blocks, and a ring of snow-capped mountains
 - AI traffic (cars, vans and other trucks) that follows lanes, overtakes, keeps right, signals and brakes for you
 - Procedural sky with sun, moon, stars, a milky way and drifting lit clouds; day/night cycle; clear, cloudy and rain weather with wet roads, spray and rain streaks
 - HDR pipeline: image-based reflections baked from the sky, clear-coat paint, PCF soft shadows, bloom, lens flare, colour grading, vignette and film grain; headlight beams and street lamps light the road at night
-- A GPU grass carpet around the camera that sways in the wind, plus swaying instanced trees
+- A GPU grass carpet around the camera, and wheat, rapeseed and sunflower crops rippling in the fields
+- Leafy trees made from painted foliage cards up close (broadleafs, firs, poplars, hedges), cheaper solid crowns in the distance
+- Moving cloud shadows, god rays through trees and peaks, and live rear-view mirrors in the cab (High and Ultra)
 - Synthesised audio: diesel engine with turbo whistle, air horn, air brakes, indicator ticks, rain and crashes
 
 **Phones.** Graphics tiers (Low, Medium, High, Ultra) are picked automatically from the device and can be changed in Settings. Dynamic resolution keeps the frame rate up, and Low skips the HDR pipeline on GPUs that can't render to float targets. Play in landscape; the title screen has a full-screen button.

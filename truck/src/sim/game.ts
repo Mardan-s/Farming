@@ -1,10 +1,11 @@
 import { BARRIER_HALF, CARRIAGE_OUT, RAIL_LAT } from './road';
 import { Job, jobOffers, levelFor, settle, Delivery } from './jobs';
 import { Traffic, Car } from './traffic';
-import { Truck, TruckInput, FUEL_CAP } from './truck';
+import { Truck, TruckInput, FUEL_CAP, HITCH_AHEAD, TRAILER_LEN } from './truck';
 import { Depot, World } from './world';
 import { Box2, yardColliders } from './yard';
 import { angleDiff, clamp, mulberry32 } from '../util';
+import { TRUCK_MODELS, TruckLook, UPGRADES, UpgradeId, torqueScale } from './trucks';
 
 // Game rules on top of the simulation: jobs and pay, fuel, collisions with traffic, barriers and
 // yard objects, time of day, weather and the save game.
@@ -19,6 +20,10 @@ export interface Save {
   km: number;
   depot: number;
   color: number;
+  model?: number;
+  owned?: number[];
+  upgrades?: UpgradeId[];
+  accent?: number;
   fuel: number;
   damage: number;
 }
@@ -30,6 +35,8 @@ export interface GameEvents {
   delivered(d: Delivery, job: Job): void;
   arrived(depot: Depot): void;
   coupled(job: Job): void;
+  trailerReady(job: Job): void;
+  speedCam(kmh: number, limit: number, fine: number): void;
 }
 
 const SAVE_KEY = 'eurohaul-save-v1';
@@ -61,6 +68,10 @@ export class Game {
   deliveries = 0;
   km = 0;
   color = 0xb3141b;
+  accent = 0xf2f2f2;
+  model = 0;
+  owned: number[] = [0];
+  upgrades = new Set<UpgradeId>();
   job: Job | null = null;
   jobTime = 0;
   offers: Job[] = [];
@@ -95,6 +106,7 @@ export class Game {
     this.world = world;
     this.colliders = yardColliders(world);
     this.load();
+    this.truck.torqueScale = torqueScale(this.model, this.upgrades);
     this.placeAtDepot(this.depotId);
     this.traffic = new Traffic(world.road, trafficCount, 5, world.depots[this.depotId].s);
     this.offers = this.makeOffers();
@@ -113,17 +125,55 @@ export class Game {
       this.km = s.km ?? 0;
       this.depotId = clamp(s.depot ?? 0, 0, this.world.depots.length - 1);
       this.color = s.color ?? this.color;
+      this.model = s.model ?? 0;
+      this.owned = s.owned ?? [0];
+      this.upgrades = new Set(s.upgrades ?? []);
+      this.accent = s.accent ?? this.accent;
       this.truck.fuel = s.fuel ?? this.truck.fuel;
       this.truck.damage = s.damage ?? 0;
     } catch { /* corrupt or unavailable storage: start fresh */ }
   }
 
   save() {
-    const s: Save = { money: this.money, xp: this.xp, deliveries: this.deliveries, km: this.km, depot: this.depotId, color: this.color, fuel: this.truck.fuel, damage: this.truck.damage };
+    const s: Save = { money: this.money, xp: this.xp, deliveries: this.deliveries, km: this.km, depot: this.depotId, color: this.color, fuel: this.truck.fuel, damage: this.truck.damage, model: this.model, owned: this.owned, upgrades: [...this.upgrades], accent: this.accent };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch { /* storage unavailable */ }
   }
 
   get level() { return levelFor(this.xp); }
+
+  // ---------------------------------------------------------------- garage
+
+  get look(): TruckLook {
+    return { model: this.model, color: this.color, accent: this.accent, chrome: this.upgrades.has('chrome') || this.model === 2, lightbar: this.upgrades.has('lightbar') || this.model === 2 };
+  }
+
+  /** Buys (if needed) and switches to a truck model. Returns false when it can't be afforded. */
+  chooseTruck(id: number) {
+    const m = TRUCK_MODELS[id];
+    if (!this.owned.includes(id)) {
+      if (this.money < m.price) return false;
+      this.money -= m.price;
+      this.owned.push(id);
+      this.ev.toast(`Bought the ${m.name}!`, 'good');
+    }
+    this.model = id;
+    this.truck.torqueScale = torqueScale(this.model, this.upgrades);
+    this.save();
+    return true;
+  }
+
+  buyUpgrade(id: UpgradeId) {
+    const u = UPGRADES.find((x) => x.id === id)!;
+    if (this.upgrades.has(id)) return false;
+    if (id === 'engine2' && !this.upgrades.has('engine1')) { this.ev.toast('Fit the stage 1 tune first', 'bad'); return false; }
+    if (this.money < u.price) { this.ev.toast('Not enough money yet', 'bad'); return false; }
+    this.money -= u.price;
+    this.upgrades.add(id);
+    this.truck.torqueScale = torqueScale(this.model, this.upgrades);
+    this.ev.toast(`${u.name} fitted`, 'good');
+    this.save();
+    return true;
+  }
 
   placeAtDepot(id: number) {
     const d = this.world.depots[id];
@@ -142,14 +192,59 @@ export class Game {
 
   // ---------------------------------------------------------------- jobs
 
+  /** The loaded trailer waiting in the yard for you to back under it. */
+  pickup: { x: number; z: number; heading: number } | null = null;
+
   accept(job: Job) {
     this.job = job;
     this.jobTime = 0;
-    this.truck.hasTrailer = true;
-    this.truck.cargoMass = job.mass;
-    this.truck.trailerHeading = this.truck.heading;
-    this.truck.alignTrailer();
-    this.ev.coupled(job);
+    this.truck.hasTrailer = false;
+    this.truck.cargoMass = 0;
+    const d = this.atDepot ?? this.world.depots[this.depotId];
+    const s = d.bayS - 5.2;
+    const p = this.world.road.toWorld(s, d.bayLat, { x: 0, y: 0, z: 0 });
+    const tg = this.world.road.sample(s, { x: 0, y: 0, z: 0, tx: 0, tz: 1 });
+    this.pickup = { x: p.x, z: p.z, heading: Math.atan2(tg.tx, tg.tz) };
+    this.ev.trailerReady(job);
+    this.ev.toast('Reverse under the trailer in the glowing bay to couple', 'info');
+  }
+
+  /** Where the trailer's kingpin is, and how far the fifth wheel is from it. */
+  couplingGap() {
+    if (!this.pickup) return null;
+    const p = this.pickup;
+    const kx = p.x + Math.sin(p.heading) * TRAILER_LEN, kz = p.z + Math.cos(p.heading) * TRAILER_LEN;
+    const f = this.truck.tractorPoint(HITCH_AHEAD, 0);
+    return { dist: Math.hypot(kx - f.x, kz - f.z), angle: Math.abs(angleDiff(this.truck.heading, p.heading)) };
+  }
+
+  canCouple() {
+    const g = this.couplingGap();
+    return !!g && g.dist < 1.2 && g.angle < 0.35 && Math.abs(this.truck.speed) < 1.5;
+  }
+
+  couple() {
+    if (!this.pickup || !this.job) return;
+    const t = this.truck, p = this.pickup;
+    t.hasTrailer = true;
+    t.cargoMass = this.job.mass;
+    t.trailerHeading = p.heading;
+    t.alignTrailer();
+    this.pickup = null;
+    this.ev.coupled(this.job);
+  }
+
+  /** Lets the yard crew line the truck up and couple it, for a fee. */
+  crewCouple() {
+    if (!this.pickup) return;
+    const fee = 150;
+    if (this.money < fee) { this.ev.toast('Not enough money for the yard crew', 'bad'); return; }
+    this.money -= fee;
+    const p = this.pickup;
+    const kx = p.x + Math.sin(p.heading) * TRAILER_LEN, kz = p.z + Math.cos(p.heading) * TRAILER_LEN;
+    this.truck.place(kx - Math.sin(p.heading) * HITCH_AHEAD, kz - Math.cos(p.heading) * HITCH_AHEAD, p.heading);
+    this.couple();
+    this.ev.toast(`Yard crew coupled the trailer · −€${fee}`, 'info');
   }
 
   cancelJob() {
@@ -158,6 +253,7 @@ export class Game {
     this.money -= fee;
     this.ev.toast(`Job cancelled · −€${fee}`, 'bad');
     this.job = null;
+    this.pickup = null;
     this.truck.hasTrailer = false;
     this.truck.cargoMass = 0;
     this.save();
@@ -175,7 +271,7 @@ export class Game {
     return Math.abs(this.world.road.delta(hit.s, d.bayS)) < 3 && Math.abs(hit.lat - d.bayLat) < 1.3 && align < 0.2;
   }
 
-  canDeliver() { return !!this.job && this.atDepot?.id === this.job.to && Math.abs(this.truck.speed) < 0.5; }
+  canDeliver() { return !!this.job && this.truck.hasTrailer && this.atDepot?.id === this.job.to && Math.abs(this.truck.speed) < 0.5; }
 
   deliver() {
     if (!this.job || !this.canDeliver()) return null;
@@ -223,7 +319,7 @@ export class Game {
 
   // ---------------------------------------------------------------- per frame
 
-  get speedLimit() { return this.atDepot ? 30 : 90; }
+  get speedLimit() { return this.atDepot ? 30 : this.world.zoneAt(this.roadS) ? 80 : 90; }
 
   lightsOn(night: number) {
     if (this.headMode === 'off') return false;
@@ -246,7 +342,21 @@ export class Game {
       else if (this.indTurned && Math.abs(input.steer) < 0.08) { this.indL = this.indR = false; this.indTurned = false; }
     }
     const hit = this.world.road.locate(t.x, t.z);
+    const prevS = this.roadS;
     if (hit) { this.roadS = hit.s; this.roadLat = hit.lat; }
+    // Speed cameras photograph anyone more than 4 km/h over the limit as they pass.
+    if (hit && hit.lat > 0 && Math.abs(this.world.road.delta(prevS, this.roadS)) < 30) {
+      for (const cs of this.world.speedCameras) {
+        if (this.world.road.delta(prevS, cs) > 0 && this.world.road.delta(this.roadS, cs) <= 0) {
+          const limit = this.speedLimit, kmh = Math.round(t.kmh);
+          if (kmh > limit + 4) {
+            const fine = 40 + (kmh - limit) * 12;
+            this.money -= fine;
+            this.ev.speedCam(kmh, limit, fine);
+          }
+        }
+      }
+    }
     const dep = hit ? this.world.depotAt(hit.s, hit.lat) : null;
     if (dep && dep !== this.atDepot) {
       this.depotId = dep.id;
@@ -257,6 +367,13 @@ export class Game {
     t.offroad = false;
     this.wallCooldown -= dt;
     this.constrain(dt);
+    // Backing in squarely couples automatically, like pressing the coupling button.
+    const gap = this.couplingGap();
+    if (gap && gap.dist < 0.7 && gap.angle < 0.25 && Math.abs(t.speed) < 4.5) {
+      // The jaws lock on contact and the bump stops the truck.
+      t.speed = 0;
+      this.couple();
+    }
     this.collideStatic();
     const obstacles = this.rigObstacles();
     this.traffic.update(dt, this.roadS, obstacles);
@@ -359,7 +476,13 @@ export class Game {
   private collideStatic() {
     const boxes = this.rigBoxes();
     const t = this.truck;
-    for (const c of this.colliders) {
+    const list = this.colliders.slice();
+    // The waiting trailer blocks you everywhere except under its front, where the tractor slides in.
+    if (this.pickup) {
+      const p = this.pickup;
+      list.push({ x: p.x + Math.sin(p.heading) * 2.6, z: p.z + Math.cos(p.heading) * 2.6, heading: p.heading, hl: 4.3, hw: 1.3 });
+    }
+    for (const c of list) {
       if (Math.abs(c.x - t.x) > 40 || Math.abs(c.z - t.z) > 40) continue;
       boxes.forEach((b, i) => {
         const o = obbOverlap(b, c);

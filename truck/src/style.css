@@ -200,3 +200,23 @@ input[type=range] { width: 160px; accent-color: var(--accent); }
   .speed b { font-size: 36px; }
   .actions { bottom: calc(74px + var(--safe-b)); }
 }
+
+/* Garage: a side panel so the truck stays in view */
+.overlay.side { background: linear-gradient(270deg, rgba(5,7,10,0.8) 0%, rgba(5,7,10,0.2) 60%, rgba(5,7,10,0) 100%); place-items: center end; }
+.garage { width: min(400px, 100%); height: 100%; display: flex; flex-direction: column; gap: 10px; }
+.garage .tabs { align-self: flex-start; }
+.gbody { display: grid; gap: 8px; overflow: auto; align-content: start; min-height: 0; }
+.tcard { padding: 12px; border-radius: 14px; background: rgba(255,255,255,0.05); border: 1px solid var(--line); display: grid; gap: 6px; cursor: pointer; }
+.tcard.sel { border-color: var(--accent); background: rgba(255,173,31,0.08); }
+.tcard .meta { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.trow { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.trow b { font: 700 18px var(--num); }
+.stats2 { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: center; font-size: 11px; color: var(--muted); }
+.meter { height: 5px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+.tagok { font: 700 11px var(--num); letter-spacing: 0.1em; color: var(--good); padding: 4px 8px; border-radius: 8px; background: rgba(61,214,140,0.12); }
+.btn:disabled { opacity: 0.4; filter: grayscale(1); }
+
+.camflash { position: absolute; inset: 0; background: #fff; pointer-events: none; animation: camflash 0.6s ease-out forwards; }
+@keyframes camflash { from { opacity: 0.85; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .camflash { animation-duration: 0.2s; } }
