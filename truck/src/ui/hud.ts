@@ -349,7 +349,14 @@ export class Hud {
     }));
     el.querySelector('input')!.addEventListener('input', (e) => { s.volume = Number((e.target as HTMLInputElement).value); this.act.setVolume(s.volume); });
     el.querySelector('[data-x="cancel"]')?.addEventListener('click', () => { this.act.cancelJob(); this.close(); });
-    el.querySelector('[data-x="reset"]')!.addEventListener('click', () => { if (confirm('Reset all progress?')) this.act.reset(); });
+    // Two taps to reset, so nobody wipes their career by accident (and no browser dialogs needed).
+    const resetBtn = el.querySelector('[data-x="reset"]') as HTMLElement;
+    resetBtn.addEventListener('click', () => {
+      if (resetBtn.dataset.armed) { this.act.reset(); return; }
+      resetBtn.dataset.armed = '1';
+      resetBtn.textContent = 'Tap again to reset';
+      setTimeout(() => { delete resetBtn.dataset.armed; resetBtn.textContent = 'Reset progress'; }, 3000);
+    });
     const done = () => { if (fromTitle) this.showTitle(); else this.close(); };
     el.querySelector('[data-x="resume"]')?.addEventListener('click', done);
     el.querySelector('.x')!.addEventListener('click', done);
