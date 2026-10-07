@@ -64,13 +64,41 @@ src/ui/        DOM HUD, bottom sheet, modals
 tests/         Vitest tests, including a headless full farming loop
 ```
 
+## Euro Haul (truck game)
+
+A second game lives in `truck/`: **Euro Haul**, a mobile-first truck driving sim in the spirit of Euro Truck Simulator. Haul freight along an Alpine motorway loop between five depots (Valmont, Nordhaven, Rivabella, Brennwald, Lac Doré).
+
+**How to play.** Pick a job on the depot's job board: cargo, weight, destination, pay and time limit. A matching trailer is coupled (curtain-sider, reefer, container or tanker). Drive to the destination, where a glowing bay and a light beam mark the spot. Stop anywhere in the yard and tap **Deliver**, or back the trailer neatly into the bay for a 10% parking bonus. Damage (barrier hits, crashes) and lateness cut the pay, and fragile cargo is extra sensitive. Collisions with traffic also cost a fine. Refuel and repair at depots.
+
+**Controls (touch).** An on-screen steering wheel you turn with a finger (or **Tilt** or **Buttons** steering in Settings), **GAS** and **BRAKE** pedals, **R/N/D**, headlights (auto, on, high beam, off), horn, cruise control, indicators and hazards. Drag the view to look around and pinch to zoom. The camera button cycles chase, cab (live dashboard gauges), cinematic TV shots and wheel cam. **Keyboard:** WASD/arrows, Space handbrake, R/N/F gears, C camera, L lights, H horn, K cruise, Q/E indicators, Esc menu.
+
+**Driving model.** A 460 hp-class diesel torque curve, 12-speed automated gearbox with skip-shifts, air brakes, engine braking, hill hold, a 90 km/h speed limiter, aero drag, rolling resistance and real hill grades (heavy loads slow down on climbs). The trailer is a kinematic articulated model, so it cuts corners and jack-knifes if you reverse carelessly. Speed-dependent steering lock keeps highway driving stable.
+
+**World and graphics.** Everything is generated at startup, with no asset files:
+- 8.5 km dual-carriageway loop with lane markings, a concrete median barrier, guard rails, delineators, street lights near towns, overhead exit gantries and speed signs
+- Terrain with fields (wheat, rapeseed, sunflowers…), lakes, forests, hedgerows, wind turbines, towns with churches and apartment blocks, and a ring of snow-capped mountains
+- AI traffic (cars, vans and other trucks) that follows lanes, overtakes, keeps right, signals and brakes for you
+- Procedural sky with sun, moon, stars, a milky way and drifting lit clouds; day/night cycle; clear, cloudy and rain weather with wet roads, spray and rain streaks
+- HDR pipeline: image-based reflections baked from the sky, clear-coat paint, PCF soft shadows, bloom, lens flare, colour grading, vignette and film grain; headlight beams and street lamps light the road at night
+- A GPU grass carpet around the camera that sways in the wind, plus swaying instanced trees
+- Synthesised audio: diesel engine with turbo whistle, air horn, air brakes, indicator ticks, rain and crashes
+
+**Phones.** Graphics tiers (Low, Medium, High, Ultra) are picked automatically from the device and can be changed in Settings. Dynamic resolution keeps the frame rate up, and Low skips the HDR pipeline on GPUs that can't render to float targets. Play in landscape; the title screen has a full-screen button.
+
+```
+truck/src/sim/     simulation (pure TS): road network, terrain, truck physics, traffic, jobs, game rules
+truck/src/render/  Three.js view: sky, landscape, roadside, scenery, grass, vehicles, effects, cameras, post
+truck/src/ui/      HUD, touch controls, sat-nav, menus
+```
+
 ## Develop
 
 ```bash
 npm install
 npm run dev        # local dev server
 npm test           # unit + simulation tests
-npm run build      # typecheck + single-file build into dist/
+npm run build      # typecheck + single-file builds: dist/index.html and dist/truck/index.html
+npm run dev:truck  # dev server for Euro Haul
 ```
 
 ## Roadmap ideas
