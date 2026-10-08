@@ -3,6 +3,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { MAT, cyl } from './materials';
 import { normalFromCanvas } from './textures';
 import { CabShape } from './cab';
+import { brakeKnob, buildCluster, isCockpitMaterial, buildWheel, cockpitMats, Cockpit, facePanel, ignition, knob, legendPlaneOf, rockerBank, vent } from './cockpit';
 import { mulberry32 } from '../util';
 
 // The cab interior, fitted to any cab shell. The walls, pillars and headliner are the shell itself
@@ -14,6 +15,7 @@ export interface InteriorBuild {
   steeringWheel: THREE.Group;
   dashScreen: THREE.Mesh;
   gpsScreen: THREE.Mesh;
+  cockpit: Cockpit;
   eye: THREE.Vector3;
 }
 
@@ -85,11 +87,13 @@ interface Mats {
 let mats: Mats | null = null;
 const all = new Set<THREE.Material>();
 
-export function isInteriorMaterial(m: THREE.Material) { return all.has(m); }
+export function isInteriorMaterial(m: THREE.Material) { return all.has(m) || isCockpitMaterial(m); }
 
 /** Interior parts too small to matter through the windows: hidden outside the cab view. */
 export function isInteriorDetail(m: THREE.Material | THREE.Material[]) {
-  if (Array.isArray(m) || !all.has(m) || !mats) return false;
+  if (Array.isArray(m) || !mats) return false;
+  if (isCockpitMaterial(m)) return true;
+  if (!all.has(m)) return false;
   return m !== mats.wall && m !== mats.seat && m !== mats.leather && m !== mats.dashTop && m !== mats.dash;
 }
 
@@ -242,6 +246,15 @@ function rbox(w: number, h: number, d: number, r: number, mat: THREE.Material, p
   return m;
 }
 
+const rb2 = (w: number, h: number, d: number, r: number, mat: THREE.Material, parent: THREE.Object3D, x: number, y: number, z: number) => rbox(w, h, d, r, mat, parent, x, y, z);
+function disc2(r: number, h: number, mat: THREE.Material, parent: THREE.Object3D, x: number, y: number, z: number) {
+  const m = cyl(r, r, h, mat, 18);
+  m.rotation.x = Math.PI / 2;
+  m.position.set(x, y, z);
+  parent.add(m);
+  return m;
+}
+
 /** Extrudes a side profile (z, y pairs) across x, with rounded edges: seat backs, cushions, bunks. */
 function profileSolid(pts: [number, number][], width: number, bevel: number, mat: THREE.Material) {
   const s = new THREE.Shape();
@@ -317,7 +330,7 @@ export function buildInterior(shape: CabShape, shellGeo: THREE.BufferGeometry, o
     const profile = (x: number): [number, number][] => {
       const D = depthAt(x);
       // A dip in front of the driver so the instrument binnacle sits low under the screen line.
-      const dip = 0.11 * THREE.MathUtils.smoothstep(1 - Math.abs(x - DRIVER) / 0.36, 0, 0.6);
+      const dip = 0.16 * THREE.MathUtils.smoothstep(1 - Math.abs(x - DRIVER) / 0.5, 0, 0.45);
       const low = Math.max(-0.66, floor - yW + 0.55);
       return [
         [0, -0.015], [-0.2, -0.005], [-(D - 0.12), 0.02 - dip * 0.6], [-(D - 0.04), 0.012 - dip], [-D, -0.035 - dip],
@@ -359,22 +372,37 @@ export function buildInterior(shape: CabShape, shellGeo: THREE.BufferGeometry, o
     }
   }
 
-  // --- instrument binnacle: a hooded cluster in front of the driver (the rig draws the gauges)
-  const clusterZ = lip + 0.12, clusterY = yW - 0.035;
-  const dashScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.23), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
-  dashScreen.position.set(DRIVER, clusterY, clusterZ);
-  dashScreen.rotation.order = 'YXZ';
-  dashScreen.rotation.set(-0.38, Math.PI, 0);
-  group.add(dashScreen);
+  // --- instrument panel under a hooded binnacle (see cockpit.ts; the rig drives the needles)
+  const clusterZ = lip + 0.1, clusterY = yW - 0.015;
+  const clusterPanel = facePanel(group, new THREE.Vector3(DRIVER, clusterY, clusterZ), 0, 0.38);
+  const cockpit = buildCluster(clusterPanel);
+  const dashScreen = cockpit.lcd;
   {
-    const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.26, 32, 1, true, -Math.PI * 0.32, Math.PI * 0.64), M.dashTop);
+    const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.56, 0.26, 40, 1, true, -Math.PI * 0.3, Math.PI * 0.6), M.dashTop);
     hood.rotation.x = Math.PI / 2 - 0.25;
-    hood.scale.set(1, 1, 0.42);
-    hood.position.set(DRIVER, clusterY - 0.1, clusterZ - 0.02);
+    hood.scale.set(1, 1, 0.34);
+    hood.position.set(DRIVER, clusterY - 0.03, clusterZ - 0.04);
     group.add(hood);
-    rbox(0.7, 0.3, 0.06, 0.02, M.black, group, DRIVER, clusterY - 0.01, clusterZ + 0.05).rotation.x = 0.38;
-    // Tell-tale strip under the dials and the trip buttons.
-    for (let k = 0; k < 4; k++) rbox(0.03, 0.02, 0.015, 0.005, M.black, group, DRIVER - 0.25 + k * 0.025, clusterY - 0.17, clusterZ - 0.06);
+  }
+  // Below the panel: the ignition key and a vent on the dash face.
+  {
+    const x = DRIVER - 0.3;
+    const face = facePanel(group, new THREE.Vector3(x, yW - 0.24, glassZ(x, yW) - depthAt(x) + 0.0), 0, 0.15);
+    ignition(face, 0, 0);
+    vent(face, 0.1, 0.02, 0.04);
+  }
+  // Left wing by the door: lighting switches, the headlamp knob and a vent.
+  {
+    const x = Math.min(DRIVER + 0.38, halfW - 0.16);
+    const face = facePanel(group, new THREE.Vector3(x, yW - 0.3, glassZ(x, yW) - depthAt(x) - 0.03), 0.3, 0.12);
+    rockerBank(face, ['HEAD', 'FOG', 'MARKER', 'BEACON', 'MIRROR\nHEAT', 'DIM'], [true, false, true, false, true, false], 0, -0.03, 3);
+    knob(face, -0.08, 0.07, 0.022, 0.8);
+    vent(face, 0.05, 0.075, 0.04);
+  }
+  // Passenger-side vents.
+  for (const x of [-DRIVER, -halfW + 0.12]) {
+    const face = facePanel(group, new THREE.Vector3(x, yW - 0.12, glassZ(x, yW) - depthAt(x) + 0.0), x < -0.8 ? -0.45 : 0, 0.1);
+    vent(face, 0, 0, 0.042);
   }
 
   // --- steering wheel: a big flat truck wheel on a tilting column
@@ -385,89 +413,63 @@ export function buildInterior(shape: CabShape, shellGeo: THREE.BufferGeometry, o
   {
     const wheelInner = new THREE.Group();
     steeringWheel.add(wheelInner);
-    // Rim: thicker at the hand grips.
-    const rimG = new THREE.TorusGeometry(0.24, 0.024, 14, 72);
-    const rp = rimG.attributes.position;
-    for (let i = 0; i < rp.count; i++) {
-      const x = rp.getX(i), y = rp.getY(i), a = Math.atan2(y, x), r0 = Math.hypot(x, y);
-      const grip = 1 + 0.25 * Math.max(0, Math.cos(2 * a)) ** 4;
-      const k = (0.24 + (r0 - 0.24) * grip) / r0;
-      rp.setXYZ(i, x * k, y * k, rp.getZ(i) * grip);
-    }
-    rimG.computeVertexNormals();
-    wheelInner.add(new THREE.Mesh(rimG, M.leather));
-    // Two wide spokes and a lower one, all meeting a big padded hub with button pads.
-    for (const a of [0.12, Math.PI - 0.12]) {
-      const sp = new THREE.Mesh(new RoundedBoxGeometry(0.2, 0.065, 0.035, 2, 0.015), M.trim);
-      sp.position.set(Math.cos(a) * 0.14, Math.sin(a) * 0.14 - 0.01, -0.01);
-      sp.rotation.z = a;
-      wheelInner.add(sp);
-      for (let k = 0; k < 4; k++) {
-        const b = new THREE.Mesh(new RoundedBoxGeometry(0.02, 0.016, 0.01, 1, 0.004), M.black);
-        b.position.set(Math.cos(a) * (0.1 + (k % 2) * 0.03), Math.sin(a) * 0.1 + (k < 2 ? 0.01 : -0.014), 0.012);
-        wheelInner.add(b);
-      }
-    }
-    const low = new THREE.Mesh(new RoundedBoxGeometry(0.06, 0.18, 0.03, 2, 0.012), M.trim);
-    low.position.set(0, -0.15, -0.01);
-    wheelInner.add(low);
-    const hub = new THREE.Mesh(new RoundedBoxGeometry(0.17, 0.13, 0.07, 3, 0.03), M.leather);
-    wheelInner.add(hub);
-    const badge = cyl(0.025, 0.025, 0.008, M.alu, 18);
-    badge.rotation.x = Math.PI / 2;
-    badge.position.z = 0.038;
-    wheelInner.add(badge);
-    // Column shroud and stalks.
-    const col = cyl(0.055, 0.07, 0.32, M.trim, 14);
+    buildWheel(wheelInner, M.leather);
+    // Column shroud, the turn-signal stalk on the left and the gear/engine-brake stalk on the right.
+    const col = cyl(0.055, 0.07, 0.32, M.trim, 18);
     col.rotation.x = Math.PI / 2;
     col.position.set(0, 0, -0.18);
     steeringWheel.add(col);
     for (const s of [1, -1]) {
-      const st = cyl(0.008, 0.006, 0.17, M.black, 6);
+      const st = cyl(0.007, 0.005, 0.17, M.black, 8);
       st.rotation.z = s * Math.PI / 2 + s * 0.15;
-      st.position.set(s * 0.1, 0.02, -0.1);
+      st.position.set(s * 0.11, 0.02, -0.11);
       steeringWheel.add(st);
-      const tip = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 6), M.black);
-      tip.position.set(s * 0.18, 0.035, -0.1);
+      const tip = cyl(0.011, 0.011, 0.045, M.black, 12);
+      tip.rotation.z = s * Math.PI / 2 + s * 0.15;
+      tip.position.set(s * 0.2, 0.034, -0.11);
       steeringWheel.add(tip);
+      const band = cyl(0.0115, 0.0115, 0.006, s > 0 ? M.alu : cockpitMats().ledOn, 12);
+      band.rotation.z = s * Math.PI / 2 + s * 0.15;
+      band.position.set(s * 0.185, 0.032, -0.11);
+      steeringWheel.add(band);
     }
   }
 
-  // --- centre stack: radio and CB, heater controls, switch bank and the US-style brake knobs
+  // --- centre stack: radio, heater, a rocker bank, the US-style air brake knobs, power sockets
   {
-    const stack = new THREE.Group();
-    stack.position.set(0.02, yW - 0.32, lip + 0.12);
-    stack.rotation.y = -0.3;
-    group.add(stack);
-    rbox(0.5, 0.56, 0.3, 0.04, M.dash, stack, 0, 0, 0.12);
-    const radio = rbox(0.36, 0.09, 0.02, 0.01, M.black, stack, 0, 0.17, -0.035);
-    void radio;
-    const disp = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 0.05), M.radio);
-    disp.position.set(-0.03, 0.17, -0.047);
-    disp.rotation.y = Math.PI;
+    const stack = facePanel(group, new THREE.Vector3(0.02, yW - 0.3, glassZ(0.02, yW) - depthAt(0.02) - 0.03), -0.3, 0.06);
+    rb2(0.46, 0.62, 0.3, 0.04, M.dash, stack, 0, 0, -0.16);
+    const C = cockpitMats();
+    // Radio head unit with a lit display, presets and two knobs.
+    rb2(0.38, 0.1, 0.02, 0.008, C.black, stack, 0, 0.22, 0.0);
+    const disp = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.042), M.radio);
+    disp.position.set(-0.02, 0.235, 0.011);
     stack.add(disp);
-    for (const x of [-0.15, 0.12]) { const k = cyl(0.018, 0.018, 0.02, M.alu, 14); k.rotation.x = Math.PI / 2; k.position.set(x, 0.17, -0.05); stack.add(k); }
-    for (const x of [-0.12, 0, 0.12]) { const k = cyl(0.028, 0.03, 0.03, M.black, 18); k.rotation.x = Math.PI / 2; k.position.set(x, 0.05, -0.04); stack.add(k); const mk = rbox(0.004, 0.02, 0.004, 0.001, M.alu, stack, x, 0.065, -0.057); void mk; }
-    const sw = new THREE.Mesh(new THREE.PlaneGeometry(0.44, 0.055), M.switches);
-    sw.position.set(0, -0.06, -0.031);
-    sw.rotation.y = Math.PI;
-    stack.add(sw);
-    // Yellow diamond (parking brakes) and red octagon (trailer air supply) push-pull knobs.
-    const knob = (sides: number, r: number, mat: THREE.Material, x: number, rot: number) => {
-      const shp = new THREE.Shape();
-      for (let k = 0; k < sides; k++) { const a = rot + (k / sides) * Math.PI * 2; const px = Math.cos(a) * r, py = Math.sin(a) * r; if (k) shp.lineTo(px, py); else shp.moveTo(px, py); }
-      const g = new THREE.ExtrudeGeometry(shp, { depth: 0.03, bevelEnabled: true, bevelSize: 0.006, bevelThickness: 0.006, bevelSegments: 2 });
-      const m = new THREE.Mesh(g, mat);
-      m.position.set(x, -0.18, -0.09);
-      stack.add(m);
-      const stem = cyl(0.008, 0.008, 0.06, M.alu, 8); stem.rotation.x = Math.PI / 2; stem.position.set(x, -0.18, -0.05); stack.add(stem);
-    };
-    knob(4, 0.04, M.yellow, 0.1, 0);
-    knob(8, 0.034, M.red, -0.04, Math.PI / 8);
-    // Cup holder with a coffee.
-    const cupB = cyl(0.04, 0.035, 0.11, M.cup, 18); cupB.position.set(-0.17, -0.2, -0.07); stack.add(cupB);
-    const lid = cyl(0.042, 0.042, 0.015, M.black, 18); lid.position.set(-0.17, -0.14, -0.07); stack.add(lid);
-    const sleeve = cyl(0.041, 0.038, 0.045, new THREE.MeshStandardMaterial({ color: 0x7a5232, roughness: 0.9 }), 18); sleeve.position.set(-0.17, -0.2, -0.07); stack.add(sleeve);
+    for (let k = 0; k < 6; k++) rb2(0.024, 0.014, 0.008, 0.003, C.rocker, stack, -0.085 + k * 0.026, 0.192, 0.012);
+    knob(stack, -0.155, 0.22, 0.016, 0.4);
+    knob(stack, 0.15, 0.22, 0.016, -1.0);
+    // Heater: fan, temperature and mode knobs.
+    rb2(0.38, 0.09, 0.012, 0.006, C.panel, stack, 0, 0.1, -0.002);
+    knob(stack, -0.12, 0.1, 0.026, -0.6);
+    knob(stack, 0, 0.1, 0.026, 0.3);
+    knob(stack, 0.12, 0.1, 0.026, 1.2);
+    for (const [x, l] of [[-0.12, 'FAN'], [0, 'TEMP'], [0.12, 'VENT']] as const) {
+      const lp = legendPlaneOf(l, 0.05, 0.016);
+      lp.position.set(x, 0.062, 0.006);
+      stack.add(lp);
+    }
+    rockerBank(stack, ['A/C', 'DIFF\nLOCK', 'ENGINE\nBRAKE', 'HI / LO', 'FIFTH\nWHEEL', 'HAZARD', 'WORK\nLIGHT', 'AXLE\nLIFT'], [true, false, true, false, false, false, false, false], 0, -0.02, 4);
+    // Parking brake (yellow diamond) and trailer air supply (red octagon), with their plates.
+    rb2(0.3, 0.1, 0.01, 0.006, C.panel, stack, 0, -0.165, 0.0);
+    brakeKnob(stack, 0.07, -0.16, 'park');
+    brakeKnob(stack, -0.07, -0.16, 'trailer');
+    // 12 V socket and USB ports, and a coffee in the holder.
+    disc2(0.012, 0.01, C.chrome, stack, 0.09, -0.25, 0.004);
+    disc2(0.008, 0.012, C.black, stack, 0.09, -0.25, 0.006);
+    for (const x of [0.13, 0.155]) rb2(0.014, 0.007, 0.006, 0.002, C.black, stack, x, -0.25, 0.004);
+    const cupB = cyl(0.04, 0.035, 0.11, M.cup, 20); cupB.position.set(-0.13, -0.24, 0.05); stack.add(cupB);
+    const lid = cyl(0.042, 0.042, 0.015, M.black, 20); lid.position.set(-0.13, -0.18, 0.05); stack.add(lid);
+    const sleeve = cyl(0.041, 0.038, 0.045, new THREE.MeshStandardMaterial({ color: 0x7a5232, roughness: 0.9 }), 20); sleeve.position.set(-0.13, -0.24, 0.05); stack.add(sleeve);
     all.add(sleeve.material as THREE.Material);
   }
 
@@ -542,7 +544,7 @@ export function buildInterior(shape: CabShape, shellGeo: THREE.BufferGeometry, o
   // Clipboard on the passenger seat.
   {
     const cb = new THREE.Group();
-    cb.position.set(-DRIVER + 0.02, cushionY + 0.1, seatZ + 0.04);
+    cb.position.set(-DRIVER + 0.02, cushionY + 0.125, seatZ + 0.06);
     cb.rotation.set(-Math.PI / 2 + 0.05, 0, 0.5);
     group.add(cb);
     const board = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.31, 0.006), new THREE.MeshStandardMaterial({ color: 0x6b4a2b, roughness: 0.8 }));
@@ -664,5 +666,5 @@ export function buildInterior(shape: CabShape, shellGeo: THREE.BufferGeometry, o
   }
 
   group.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = false; o.receiveShadow = true; } });
-  return { group, steeringWheel, dashScreen, gpsScreen, eye };
+  return { group, steeringWheel, dashScreen, gpsScreen, eye, cockpit };
 }

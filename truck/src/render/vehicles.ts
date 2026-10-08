@@ -10,6 +10,7 @@ import type { CarKind } from '../sim/traffic';
 import { HITCH_AHEAD, TRAILER_LEN, WHEELBASE } from '../sim/truck';
 import { buildConventional } from './conventional';
 import { buildInterior, isInteriorDetail, isInteriorMaterial } from './interior';
+import type { Cockpit } from './cockpit';
 
 /** Interior parts are in the cab's shadow already, so they never cast one. */
 export const insideMat = (m: THREE.Material | THREE.Material[]) => (Array.isArray(m) ? m.some(isInteriorMaterial) : isInteriorMaterial(m));
@@ -320,6 +321,8 @@ export interface Tractor {
   exterior: THREE.Object3D[];
   /** Small interior parts, only shown in the cab view. */
   cabDetail: THREE.Object3D[];
+  /** Live instruments (player's cab only). */
+  cockpit: Cockpit | null;
   /** Where the rig puts things (cab-local): cab suspension pivot, driver's eye, headlamps, main mirror. */
   fit: { pivot: THREE.Vector3; eye: THREE.Vector3; head: THREE.Vector3; mirror: THREE.Vector3; mirrorSize: [number, number] };
 }
@@ -625,10 +628,11 @@ export function buildTractor(look: TruckLook, opts: { interior: boolean; lod?: b
   let dashScreen: THREE.Mesh | null = null;
   let gpsScreen: THREE.Mesh | null = null;
   let eye = new THREE.Vector3(0.62, 2.98, 3.98);
+  let cockpit: Cockpit | null = null;
   if (opts.interior) {
     const inner = buildInterior(shape, built.shell, { floor: 1.36 });
     cab.add(inner.group);
-    ({ steeringWheel, dashScreen, gpsScreen, eye } = inner);
+    ({ steeringWheel, dashScreen, gpsScreen, eye, cockpit } = inner);
   }
   const headlightAnchor = new THREE.Object3D();
   headlightAnchor.position.set(0, 1.55, 5.35);
@@ -637,6 +641,7 @@ export function buildTractor(look: TruckLook, opts: { interior: boolean; lod?: b
   const keep: THREE.Object3D[] = [steeringWheel, headlightAnchor, ...wipers];
   if (dashScreen) keep.push(dashScreen);
   if (gpsScreen) keep.push(gpsScreen);
+  if (cockpit) keep.push(cockpit.telltales, ...Object.values(cockpit.gauges).map((g) => g.needle));
   for (const g of glass) keep.push(g);
   mergeStatic(cab, keep);
   mergeStatic(chassis);
@@ -647,7 +652,7 @@ export function buildTractor(look: TruckLook, opts: { interior: boolean; lod?: b
   // The cab interior sits in the shell's shadow already, so it never casts one.
   root.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = !o.userData.noShadow && !insideMat(o.material); o.receiveShadow = true; } });
   for (const g of glass) g.castShadow = false;
-  return { root, cab, steer, spin, steeringWheel, exhaustTip, glass, dashScreen, gpsScreen, lights, headlightAnchor, paintMat: shellMat, model: look.model, exterior, wipers, cabDetail,
+  return { root, cab, steer, spin, steeringWheel, exhaustTip, glass, dashScreen, gpsScreen, lights, headlightAnchor, paintMat: shellMat, model: look.model, exterior, wipers, cabDetail, cockpit,
     fit: {
       pivot: new THREE.Vector3(0, 1.25, 3.9),
       eye,

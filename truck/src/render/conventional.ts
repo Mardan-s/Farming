@@ -7,6 +7,7 @@ import { CabProfile, buildCab, panelTextures } from './cab';
 import { HITCH_AHEAD } from '../sim/truck';
 import { ARCH, CHECKER, HORN, LENS, Tractor, brushed, checker, insideMat, makeLightMats, shellPaint, wheel } from './vehicles';
 import { buildInterior, isInteriorDetail } from './interior';
+import type { Cockpit } from './cockpit';
 
 // An American-style long-nose ("conventional") sleeper tractor: the engine sits under a long
 // sloping hood with the front fenders formed into it, a chrome grille stands at the front, and
@@ -549,15 +550,17 @@ export function buildConventional(look: TruckLook, opts: { interior: boolean; lo
   let dashScreen: THREE.Mesh | null = null;
   let gpsScreen: THREE.Mesh | null = null;
   let eye = new THREE.Vector3(0.6, 2.6, 3.6);
+  let cockpit: Cockpit | null = null;
   if (opts.interior) {
     const inner = buildInterior(shape, built.shell, { floor: CAB_Y0 + 0.1 });
     cab.add(inner.group);
-    ({ steeringWheel, dashScreen, gpsScreen, eye } = inner);
+    ({ steeringWheel, dashScreen, gpsScreen, eye, cockpit } = inner);
   }
 
   const keep: THREE.Object3D[] = [steeringWheel, headlightAnchor, ...wipers, ...glass];
   if (dashScreen) keep.push(dashScreen);
   if (gpsScreen) keep.push(gpsScreen);
+  if (cockpit) keep.push(cockpit.telltales, ...Object.values(cockpit.gauges).map((g) => g.needle));
   mergeStatic(cab, keep);
   mergeStatic(chassis, [headlightAnchor]);
   const cabDetail: THREE.Object3D[] = [];
@@ -566,7 +569,7 @@ export function buildConventional(look: TruckLook, opts: { interior: boolean; lo
   for (const g of glass) g.castShadow = false;
   return {
     root, cab, steer, spin, steeringWheel, exhaustTip, glass, dashScreen, gpsScreen, lights, headlightAnchor,
-    paintMat: shellMat, model: M, exterior: [], wipers, cabDetail,
+    paintMat: shellMat, model: M, exterior: [], wipers, cabDetail, cockpit,
     fit: {
       pivot: new THREE.Vector3(0, CAB_Y0, 3.8),
       eye,

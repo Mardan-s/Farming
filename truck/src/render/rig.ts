@@ -7,6 +7,7 @@ import { MAT } from './materials';
 import type { TruckLook } from '../sim/trucks';
 import { LightState, Trailer, Tractor, applyLights, buildTrailer, buildTractor } from './vehicles';
 import { setCabAmbient } from './interior';
+import { needleAngle, setPanelLights, GaugeId } from './cockpit';
 import type { Particles } from './fx';
 
 // The player's rig on screen: places the tractor and trailer on the ground, animates the cab
@@ -46,6 +47,11 @@ export class RigView {
   gpsSource: HTMLCanvasElement | null = null;
   private gpsTex: THREE.CanvasTexture | null = null;
   private gpsT = 0;
+  private ttCanvas = Object.assign(document.createElement('canvas'), { width: 1024, height: 48 });
+  private ttTex: THREE.CanvasTexture | null = null;
+  private ttKey = '';
+  /** Smoothed gauge readings, so needles swing rather than jump. */
+  private read: Partial<Record<GaugeId, number>> = {};
   private wipePh = 0;
   /** Cab-local eye position for the driver's view. */
   readonly eye = new THREE.Object3D();
@@ -57,7 +63,7 @@ export class RigView {
     this.mirrorRes = mirrorRes;
     this.beamMat = new THREE.MeshBasicMaterial({ map: beamTexture(), color: 0xfff0d8, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
     this.dashCanvas = document.createElement('canvas');
-    this.dashCanvas.width = 1024; this.dashCanvas.height = 400;
+    this.dashCanvas.width = 256; this.dashCanvas.height = 360;
     this.dashTex = new THREE.CanvasTexture(this.dashCanvas);
     this.dashTex.colorSpace = THREE.SRGBColorSpace;
     this.fit(look);
@@ -100,6 +106,14 @@ export class RigView {
     }
     if (this.tractor.dashScreen) (this.tractor.dashScreen.material as THREE.MeshBasicMaterial).map = this.dashTex;
     this.gpsTex = null;
+    this.ttTex = null;
+    this.ttKey = '';
+    const tt = this.tractor.cockpit?.telltales;
+    if (tt) {
+      this.ttTex = new THREE.CanvasTexture(this.ttCanvas);
+      this.ttTex.colorSpace = THREE.SRGBColorSpace;
+      (tt.material as THREE.MeshBasicMaterial).map = this.ttTex;
+    }
     // Live rear-view mirrors: a small camera at each main mirror renders into the glass.
     this.mirrors = [];
     if (this.mirrorRes) {
@@ -242,6 +256,7 @@ export class RigView {
     }
     this.dashT -= dt;
     if (this.dashT <= 0 && this.interiorView) { this.dashT = 0.1; this.drawDash(t); }
+    if (this.interiorView && this.tractor.cockpit) this.updateGauges(dt, t, lights, night);
     if (this.interiorView) setCabAmbient(0.03 + (1 - night) * 0.17);
     // Sat-nav: shows the same map as the HUD.
     this.gpsT -= dt;
@@ -267,65 +282,78 @@ export class RigView {
     }
   }
 
+  /** Needles, warning lights and panel lighting. */
+  private updateGauges(dt: number, t: Truck, lights: LightState, night: number) {
+    const ck = this.tractor.cockpit!;
+    const on = t.rpm > 300;
+    const target: Record<GaugeId, number> = {
+      tach: t.rpm / 100,
+      speedo: t.kmh,
+      water: on ? 82 + t.load * 6 : 40,
+      oil: on ? 22 + (t.rpm / 2100) * 42 : 0,
+      volts: on ? 14.1 : 12.4,
+      trans: on ? 70 + t.load * 12 : 40,
+      air1: 118 - t.braking * 14,
+      air2: 121 - t.braking * 11,
+      fuel: (t.fuel / 600) * 4,
+      def: 3.2,
+    };
+    const k = 1 - Math.exp(-dt * 8);
+    for (const id of Object.keys(target) as GaugeId[]) {
+      const v = (this.read[id] ??= target[id]) + (target[id] - (this.read[id] ?? 0)) * k;
+      this.read[id] = v;
+      ck.gauges[id].needle.rotation.z = needleAngle(id, v);
+    }
+    setPanelLights(night);
+    // Tell-tales: redraw only when something changes.
+    const blink = this.blink < 0.4;
+    const st = {
+      l: lights.indL && blink, r: lights.indR && blink, hi: lights.high, park: Math.abs(t.speed) < 0.2 && t.braking > 0.5,
+      cruise: t.cruise != null, jake: t.braking > 0 && t.speed > 3, fuel: t.fuel < 90, belt: false, dmg: t.damage > 0.3,
+    };
+    const key = JSON.stringify(st);
+    if (key !== this.ttKey && this.ttTex) { this.ttKey = key; this.drawTelltales(st); this.ttTex.needsUpdate = true; }
+  }
+
+  private drawTelltales(s: Record<string, boolean>) {
+    const g = this.ttCanvas.getContext('2d')!;
+    g.fillStyle = '#050607'; g.fillRect(0, 0, 1024, 48);
+    const icons: [string, string, boolean][] = [
+      ['◀', '#3cff6a', s.l], ['HI', '#3a8cff', s.hi], ['(P)', '#ff3030', s.park], ['AIR', '#ff3030', false], ['CHECK', '#ffb020', s.dmg],
+      ['ABS', '#ffb020', false], ['CRUISE', '#3cff6a', s.cruise], ['JAKE', '#3cff6a', s.jake], ['FUEL', '#ffb020', s.fuel], ['DEF', '#ffb020', false],
+      ['WIF', '#ffb020', false], ['▶', '#3cff6a', s.r],
+    ];
+    const w = 1024 / icons.length;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    icons.forEach(([txt, col, lit], i) => {
+      g.fillStyle = lit ? col : '#24272b';
+      g.font = `800 ${txt.length > 3 ? 20 : 28}px "Barlow Condensed", Arial, sans-serif`;
+      if (lit) { g.shadowColor = col; g.shadowBlur = 12; } else g.shadowBlur = 0;
+      g.fillText(txt, w * (i + 0.5), 25);
+    });
+    g.shadowBlur = 0;
+  }
+
+  /** The small display between the big dials: gear, speed, cruise, odometer, clock. */
   private drawDash(t: Truck) {
     const g = this.dashCanvas.getContext('2d')!;
-    const W = 1024, H = 400;
-    const bg = g.createRadialGradient(W / 2, H / 2, 40, W / 2, H / 2, W * 0.6);
-    bg.addColorStop(0, '#101318'); bg.addColorStop(1, '#030405');
+    const W = 256, H = 360;
+    const bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0d1824'); bg.addColorStop(1, '#05090e');
     g.fillStyle = bg; g.fillRect(0, 0, W, H);
-    // A big analogue dial: chrome bezel, fine and major ticks, numerals, a red-zone arc and a lit needle.
-    const dial = (cx: number, cy: number, r: number, value: number, max: number, major: number, label: (v: number) => string, unit: string, redFrom: number) => {
-      const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
-      const ang = (v: number) => a0 + (a1 - a0) * Math.min(1, Math.max(0, v / max));
-      const bez = g.createLinearGradient(cx, cy - r, cx, cy + r);
-      bez.addColorStop(0, '#e9edf2'); bez.addColorStop(0.5, '#6c7380'); bez.addColorStop(1, '#d5dae0');
-      g.lineWidth = 9; g.strokeStyle = bez; g.beginPath(); g.arc(cx, cy, r + 6, 0, Math.PI * 2); g.stroke();
-      g.fillStyle = '#07090c'; g.beginPath(); g.arc(cx, cy, r + 1, 0, Math.PI * 2); g.fill();
-      g.lineWidth = 7; g.strokeStyle = '#c4161c'; g.beginPath(); g.arc(cx, cy, r - 8, ang(redFrom), a1); g.stroke();
-      const minor = major / 5;
-      for (let v = 0; v <= max + 1e-6; v += minor) {
-        const a = ang(v), big = Math.abs(v / major - Math.round(v / major)) < 1e-6;
-        g.strokeStyle = big ? '#f2f4f7' : '#8d96a3'; g.lineWidth = big ? 4 : 2;
-        g.beginPath(); g.moveTo(cx + Math.cos(a) * (r - (big ? 28 : 18)), cy + Math.sin(a) * (r - (big ? 28 : 18))); g.lineTo(cx + Math.cos(a) * (r - 4), cy + Math.sin(a) * (r - 4)); g.stroke();
-        if (big) { g.fillStyle = '#eef1f5'; g.font = '600 26px "Barlow", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(label(v), cx + Math.cos(a) * (r - 52), cy + Math.sin(a) * (r - 52)); }
-      }
-      g.fillStyle = '#7d8896'; g.font = '600 20px "Barlow", sans-serif'; g.textAlign = 'center'; g.fillText(unit, cx, cy + r * 0.42);
-      const a = ang(value);
-      g.save(); g.shadowColor = '#ff5a1f'; g.shadowBlur = 14;
-      g.strokeStyle = '#ff4a12'; g.lineWidth = 6; g.lineCap = 'round';
-      g.beginPath(); g.moveTo(cx - Math.cos(a) * 22, cy - Math.sin(a) * 22); g.lineTo(cx + Math.cos(a) * (r - 14), cy + Math.sin(a) * (r - 14)); g.stroke();
-      g.restore();
-      const cap = g.createRadialGradient(cx - 5, cy - 5, 2, cx, cy, 20);
-      cap.addColorStop(0, '#9aa3ad'); cap.addColorStop(1, '#1b1e22');
-      g.fillStyle = cap; g.beginPath(); g.arc(cx, cy, 18, 0, Math.PI * 2); g.fill();
-    };
-    dial(200, 205, 168, t.kmh, 140, 20, (v) => String(v), 'km/h', 125);
-    dial(824, 205, 168, t.rpm / 100, 25, 5, (v) => String(v), 'x100 r/min', 21);
-    // Centre display: gear, cruise, odometer and fuel.
-    const lx = 392, ly = 46, lw = 240, lh = 190;
-    g.fillStyle = '#0b1622'; g.fillRect(lx, ly, lw, lh);
-    g.strokeStyle = '#26384a'; g.lineWidth = 2; g.strokeRect(lx, ly, lw, lh);
     g.textAlign = 'center'; g.textBaseline = 'alphabetic';
-    g.fillStyle = '#ffb347'; g.font = '800 78px "Barlow Condensed", sans-serif';
-    g.fillText(t.drive === 'D' ? `D${t.gear}` : t.drive, W / 2, ly + 92);
-    g.fillStyle = t.cruise != null ? '#3dd68c' : '#38506a'; g.font = '700 22px "Barlow", sans-serif';
-    g.fillText(t.cruise != null ? `CRUISE ${Math.round(t.cruise * 3.6)}` : 'CRUISE --', W / 2, ly + 128);
-    g.fillStyle = '#9fb7cf'; g.font = '600 22px "Barlow", sans-serif';
-    g.fillText(`${(t.odometer / 1000 + 284113).toFixed(1)} km`, W / 2, ly + 168);
-    // Small gauges: fuel and air pressure.
-    const small = (cx: number, frac: number, label: string, warn: boolean) => {
-      const cy = 330, r = 46, a0 = Math.PI * 1.1, a1 = Math.PI * 1.9;
-      g.lineWidth = 4; g.strokeStyle = '#59626e'; g.beginPath(); g.arc(cx, cy, r, a0, a1); g.stroke();
-      const a = a0 + (a1 - a0) * frac;
-      g.strokeStyle = warn ? '#ff3b30' : '#ff6a1f'; g.lineWidth = 4; g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(a) * (r - 6), cy + Math.sin(a) * (r - 6)); g.stroke();
-      g.fillStyle = '#8d96a3'; g.font = '600 18px "Barlow", sans-serif'; g.fillText(label, cx, cy + 22);
-    };
-    const fuel = t.fuel / 600;
-    small(456, fuel, 'FUEL', fuel < 0.15);
-    small(568, 0.72, 'AIR', false);
-    // Tell-tales.
-    if (t.cruise != null) { g.fillStyle = '#3dd68c'; g.beginPath(); g.arc(W / 2 - 92, 375, 8, 0, 7); g.fill(); }
-    if (t.braking > 0.5) { g.fillStyle = '#ff3b30'; g.beginPath(); g.arc(W / 2 + 92, 375, 8, 0, 7); g.fill(); }
+    g.fillStyle = '#ffb347'; g.font = '800 92px "Barlow Condensed", sans-serif';
+    g.fillText(t.drive === 'D' ? String(t.gear) : t.drive, W / 2, 104);
+    g.fillStyle = '#6f8aa6'; g.font = '700 22px "Barlow", sans-serif';
+    g.fillText(t.drive === 'D' ? 'AUTO' : t.drive === 'R' ? 'REVERSE' : 'NEUTRAL', W / 2, 136);
+    g.fillStyle = '#e8f1ff'; g.font = '700 54px "Barlow Condensed", sans-serif';
+    g.fillText(String(Math.round(t.kmh)), W / 2, 210);
+    g.fillStyle = '#6f8aa6'; g.font = '600 18px "Barlow", sans-serif'; g.fillText('km/h', W / 2, 232);
+    g.fillStyle = t.cruise != null ? '#3dd68c' : '#2a3a4c'; g.font = '700 22px "Barlow", sans-serif';
+    g.fillText(t.cruise != null ? `CC ${Math.round(t.cruise * 3.6)}` : 'CC --', W / 2, 276);
+    g.fillStyle = '#9fb7cf'; g.font = '600 20px "Barlow", sans-serif';
+    g.fillText(`${(t.odometer / 1000 + 284113).toFixed(1)} km`, W / 2, 316);
+    g.fillStyle = '#4c6580'; g.fillRect(24, 330, W - 48, 2);
     this.dashTex.needsUpdate = true;
   }
 }
