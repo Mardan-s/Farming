@@ -31,6 +31,8 @@ export interface Car {
   /** Seconds left standing still after a crash. */
   crashed: number;
   braking: boolean;
+  /** Seconds before this driver will honk again. */
+  honkCd: number;
   indicator: -1 | 0 | 1;
   keepRightTimer: number;
   /** Bumped every time the car is recycled so the renderer can repaint it. */
@@ -45,6 +47,8 @@ const KINDS: CarKind[] = ['sedan', 'sedan', 'sedan', 'hatch', 'hatch', 'wagon', 
 
 export class Traffic {
   readonly cars: Car[] = [];
+  /** Cars that honked this frame (read and cleared by the game). */
+  honks: Car[] = [];
   private rnd: () => number;
   private nextId = 1;
 
@@ -59,7 +63,7 @@ export class Traffic {
 
   private make(): Car {
     return {
-      id: this.nextId++, kind: 'sedan', color: 0, s: 0, dir: 1, lane: 0, lat: 0, latVel: 0, speed: 0, desired: 30,
+      id: this.nextId++, kind: 'sedan', color: 0, s: 0, dir: 1, lane: 0, lat: 0, latVel: 0, speed: 0, desired: 30, honkCd: 0,
       len: 4.7, wid: 1.8, crashed: 0, braking: false, indicator: 0, keepRightTimer: 0, gen: 0,
     };
   }
@@ -91,8 +95,8 @@ export class Traffic {
   }
 
   /** Free gap ahead of `c` in the lane band around `lat`, considering cars and the player. */
-  private gapAhead(c: Car, lat: number, player: Obstacle[], back = 0): { gap: number; speed: number } {
-    let best = 250, bestV = c.desired;
+  private gapAhead(c: Car, lat: number, player: Obstacle[], back = 0): { gap: number; speed: number; player: boolean } {
+    let best = 250, bestV = c.desired, isPlayer = false;
     for (const o of this.cars) {
       if (o === c || o.dir !== c.dir || Math.abs(o.lat - lat) > 2.4) continue;
       const d = this.road.delta(c.s, o.s) * c.dir;
@@ -105,9 +109,9 @@ export class Traffic {
       const d = this.road.delta(c.s, p.s) * c.dir;
       if (d < -back || d > 250) continue;
       const gap = d - c.len / 2 - 0.6;
-      if (gap < best) { best = gap; bestV = 0; }
+      if (gap < best) { best = gap; bestV = 0; isPlayer = true; }
     }
-    return { gap: best, speed: bestV };
+    return { gap: best, speed: bestV, player: isPlayer };
   }
 
   update(dt: number, playerS: number, player: Obstacle[]) {
@@ -130,6 +134,9 @@ export class Traffic {
       acc = clamp(acc, -9, aMax);
       c.speed = Math.max(0, v + acc * dt);
       c.braking = acc < -1;
+      // Drivers forced to brake hard for the player let them know about it.
+      c.honkCd -= dt;
+      if (lead.player && acc < -3 && c.honkCd <= 0 && lead.gap < 45) { c.honkCd = 12; this.honks.push(c); }
       c.s += c.speed * c.dir * dt;
       c.s = ((c.s % this.road.length) + this.road.length) % this.road.length;
 

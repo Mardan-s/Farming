@@ -87,7 +87,7 @@ A second game lives in `truck/`: **Euro Haul**, a mobile-first truck driving sim
 - A GPU grass carpet around the camera, and wheat, rapeseed and sunflower crops rippling in the fields
 - Leafy trees made from painted foliage cards up close (broadleafs, firs, poplars, hedges), cheaper solid crowns in the distance
 - Moving cloud shadows, god rays through trees and peaks, and live rear-view mirrors in the cab (High and Ultra)
-- Synthesised audio: diesel engine with turbo whistle, air horn, air brakes, indicator ticks, rain and crashes
+- Synthesised audio: a sample-level diesel (every cylinder firing modelled, with exhaust and chassis resonance, combustion knock, injector clatter and a spooling turbo; the V8 fires unevenly for its burble) running in an AudioWorklet; tyre roar and tread hum, wind, rain hiss and roof drumming, a multi-tone air horn, reverse beeper, indicator relay, gearshift clunks, air-brake sighs, brake squeal, expansion joints on the viaduct, passing traffic with pan and doppler, drivers honking when you cut them up, birds by day and crickets at night. Sitting in the cab muffles the outside world
 
 **Phones.** Graphics tiers (Low, Medium, High, Ultra) are picked automatically from the device and can be changed in Settings. Dynamic resolution keeps the frame rate up, and Low skips the HDR pipeline on GPUs that can't render to float targets. Play in landscape; the title screen has a full-screen button.
 

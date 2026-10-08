@@ -5,6 +5,7 @@ import { jobOffers, levelFor, settle } from '../truck/src/sim/jobs';
 import { Traffic } from '../truck/src/sim/traffic';
 import { World } from '../truck/src/sim/world';
 import { Game } from '../truck/src/sim/game';
+import { EngineDSP } from '../truck/src/engineDsp';
 
 const world = new World(11, 1500);
 const road = world.road;
@@ -212,5 +213,26 @@ describe('speed cameras', () => {
     for (let i = 0; i < 30 * 4; i++) g.update(1 / 30, { throttle: 1, brake: 0, steer: 0, handbrake: false });
     expect(fined).toBeGreaterThan(0);
     expect(g.money).toBeLessThan(before);
+  });
+});
+
+describe('engine sound', () => {
+  const render = (rpm: number, load: number, cyl = 6, muffle = 0) => {
+    const d = new EngineDSP(48000);
+    Object.assign(d.p, { rpm, load, cyl, gain: 1, muffle });
+    const L = new Float32Array(48000), R = new Float32Array(48000);
+    for (let k = 0; k < 48000; k += 128) d.render(L.subarray(k, k + 128), R.subarray(k, k + 128));
+    let peak = 0, sum = 0, hf = 0;
+    for (let i = 12000; i < 48000; i++) { const v = L[i]; peak = Math.max(peak, Math.abs(v)); sum += v * v; hf += (v - L[i - 1]) ** 2; }
+    return { peak, rms: Math.sqrt(sum / 36000), hf: Math.sqrt(hf / 36000), finite: L.every(Number.isFinite) && R.every(Number.isFinite) };
+  };
+
+  it('stays finite and inside full scale, and gets louder under load', () => {
+    const idle = render(600, 0), pull = render(1500, 1), v8 = render(1400, 0.8, 8), cab = render(1500, 1, 6, 1);
+    for (const r of [idle, pull, v8, cab]) { expect(r.finite).toBe(true); expect(r.peak).toBeLessThanOrEqual(0.8); expect(r.rms).toBeGreaterThan(0.005); }
+    expect(pull.rms).toBeGreaterThan(idle.rms);
+    // The cab takes the edge off: less high-frequency energy.
+    expect(cab.hf).toBeLessThan(pull.hf * 0.85);
+    expect(pull.peak).toBeLessThan(0.7);
   });
 });

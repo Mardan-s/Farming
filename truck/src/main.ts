@@ -21,7 +21,8 @@ import { STATIONS } from './radio';
 import { Post } from './render/post';
 import { Hud } from './ui/hud';
 import { Input, SteerMode } from './ui/input';
-import { Audio } from './audio';
+import { Audio, TrafficSound } from './audio';
+import { WHEELBASE } from './sim/truck';
 import { clamp, lerp, smoothstep } from './util';
 
 // Sun glints on near-mirror surfaces can exceed the half-float range and turn into infinities that
@@ -349,6 +350,12 @@ async function boot() {
   const focus = new THREE.Vector3();
   const windV = new THREE.Vector3(1.2, 0, 0.6);
   const relWind = new THREE.Vector3();
+  const camFwd = new THREE.Vector3();
+  const carPos = { x: 0, y: 0, z: 0 };
+  const carTan = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
+  const joints: number[] = [];
+  for (let s = world.river.s - world.bridgeHalf; s <= world.river.s + world.bridgeHalf; s += 38) joints.push(s);
+  let lastFront = game.roadS;
 
   const loop = () => {
     requestAnimationFrame(loop);
@@ -436,7 +443,36 @@ async function boot() {
     }
 
     audio.radio?.setPlace(cam.mode === 'cab', settings.volume);
-    audio.update(dt, { rpm: t.rpm, load: t.load, speed: t.speed, rain: game.rain, horn: game.horn, braking: t.braking, indicator: (game.indL || game.indR || game.hazard) && started, interior: cam.mode === 'cab' });
+    audio.update(dt, { rpm: t.rpm, load: t.load, speed: t.speed, rain: game.rain, horn: game.horn, braking: t.braking, indicator: (game.indL || game.indR || game.hazard) && started, interior: cam.mode === 'cab', reverse: t.drive === 'R' && started, night });
+    // Traffic and honks are heard from the camera: panned left/right of where it looks.
+    cam.camera.getWorldDirection(camFwd);
+    const camRight = { x: -camFwd.z, z: camFwd.x };
+    const rl = Math.hypot(camRight.x, camRight.z) || 1;
+    const tvx = Math.sin(t.heading) * t.speed, tvz = Math.cos(t.heading) * t.speed;
+    const near: TrafficSound[] = [];
+    for (const c of game.traffic.cars) {
+      if (Math.abs(world.road.delta(c.s, game.roadS)) > 120) continue;
+      const p = world.road.toWorld(c.s, c.lat, carPos);
+      const dx = p.x - cam.camera.position.x, dz = p.z - cam.camera.position.z, dist = Math.hypot(dx, dz) || 1;
+      const tg = world.road.sample(c.s, carTan);
+      const rvx = tg.tx * c.speed * c.dir - tvx, rvz = tg.tz * c.speed * c.dir - tvz;
+      near.push({ pan: ((dx * camRight.x + dz * camRight.z) / rl) / dist, dist, closing: -(rvx * dx + rvz * dz) / dist, truck: c.kind === 'truck' });
+    }
+    audio.updateTraffic(near);
+    for (const c of game.traffic.honks) {
+      const p = world.road.toWorld(c.s, c.lat, carPos);
+      const dx = p.x - cam.camera.position.x, dz = p.z - cam.camera.position.z, dist = Math.hypot(dx, dz) || 1;
+      audio.honk(((dx * camRight.x + dz * camRight.z) / rl) / dist, dist);
+    }
+    game.traffic.honks = [];
+    // Expansion joints on the viaduct: a thump for every axle of the rig.
+    for (const js of joints) {
+      const front = game.roadS + WHEELBASE;
+      if (world.road.delta(lastFront, js) > 0 && world.road.delta(front, js) <= 0 && Math.abs(world.road.delta(front, js)) < 20 && game.roadLat > 0) {
+        audio.joint(Math.abs(t.speed), t.hasTrailer ? [0, 3.9, 12.54, 13.85, 15.16] : [0, 3.9]);
+      }
+    }
+    lastFront = game.roadS + WHEELBASE;
 
     fpsAvg = lerp(fpsAvg, 1 / Math.max(1e-3, rawDt), 0.05);
     hud!.update(dt, fpsAvg);
@@ -454,7 +490,7 @@ async function boot() {
   };
   requestAnimationFrame(loop);
   (window as unknown as { __game: unknown }).__game = {
-    game, cam, rig, renderer, scene, sky, grass, TIERS,
+    game, cam, rig, renderer, scene, sky, grass, audio, TIERS,
     /** Debug helper: jump straight to a time of day and weather. */
     set: (o: { hours?: number; cloud?: number; rain?: number; wet?: number }) => {
       if (o.hours != null) { game.hours = o.hours; game.fixedHour = o.hours; }
