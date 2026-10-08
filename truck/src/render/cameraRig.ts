@@ -19,7 +19,7 @@ export class CameraRig {
   pitch = 0.26;
   dist = 23;
   lookYaw = 0;
-  lookPitch = -0.2;
+  lookPitch = -0.3;
   private camYaw = 0;
   private idle = 0;
   private cine = { x: 0, y: 0, z: 0, s: -1, fov: 30, style: 0 };
@@ -52,7 +52,7 @@ export class CameraRig {
     this.mode = CAM_MODES[(CAM_MODES.indexOf(this.mode) + 1) % CAM_MODES.length];
     this.cine.s = -1;
     this.lookYaw = 0;
-    this.lookPitch = -0.2;
+    this.lookPitch = -0.3;
   }
 
   bump(amount: number) { this.shake = Math.min(1, this.shake + amount); }
@@ -74,7 +74,7 @@ export class CameraRig {
       // Head bob from bumps and a lean against acceleration.
       cam.position.y += Math.sin(time * 9) * 0.004 * speedF;
       const yaw = t.heading + this.lookYaw;
-      if (this.idle > 4) { this.lookYaw = damp(this.lookYaw, 0, 1.5, dt); this.lookPitch = damp(this.lookPitch, -0.2, 1.5, dt); }
+      if (this.idle > 4) { this.lookYaw = damp(this.lookYaw, 0, 1.5, dt); this.lookPitch = damp(this.lookPitch, -0.3, 1.5, dt); }
       const pitch = this.lookPitch - root.rotation.x;
       this.look.set(cam.position.x + Math.sin(yaw) * Math.cos(pitch), cam.position.y + Math.sin(pitch), cam.position.z + Math.cos(yaw) * Math.cos(pitch));
       cam.up.set(0, 1, 0);
