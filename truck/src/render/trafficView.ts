@@ -3,11 +3,12 @@ import type { Car, CarKind, Traffic } from '../sim/traffic';
 import type { Road } from '../sim/road';
 import type { TrailerKind } from '../sim/jobs';
 import { mergeStatic, paint } from './materials';
+import { TRUCK_MODELS } from '../sim/trucks';
 import { LightMats, LightState, aiTruckLook, applyLights, buildCar, buildTractor, buildTrailer } from './vehicles';
 
 // Draws the AI traffic. Models are pooled per vehicle kind and repainted when a car respawns.
 
-interface Model { kind: CarKind; root: THREE.Group; spin: THREE.Group[]; lights: LightMats[]; paintMesh: THREE.Mesh[]; trailer?: THREE.Group; trailerSpin?: THREE.Group[] }
+interface Model { kind: CarKind; root: THREE.Group; front?: number; spin: THREE.Group[]; lights: LightMats[]; paintMesh: THREE.Mesh[]; trailer?: THREE.Group; trailerSpin?: THREE.Group[] }
 
 const TRUCK_TRAILERS: TrailerKind[] = ['curtain', 'reefer', 'container', 'tanker', 'curtain', 'container'];
 
@@ -22,14 +23,15 @@ export class TrafficView {
 
   private make(kind: CarKind, seed: number): Model {
     if (kind === 'truck') {
-      const tr = buildTractor(aiTruckLook(seed), { interior: false, lod: true });
+      const look = aiTruckLook(seed);
+      const tr = buildTractor(look, { interior: false, lod: true });
       const tl = buildTrailer(TRUCK_TRAILERS[seed % TRUCK_TRAILERS.length], seed + 1, { lod: true });
       const root = new THREE.Group();
       root.add(tr.root);
       mergeStatic(tr.root);
       mergeStatic(tl.root);
       this.scene.add(root, tl.root);
-      return { kind, root, spin: [], lights: [tr.lights, tl.lights], paintMesh: [], trailer: tl.root, trailerSpin: [] };
+      return { kind, root, spin: [], lights: [tr.lights, tl.lights], paintMesh: [], trailer: tl.root, trailerSpin: [], front: TRUCK_MODELS[look.model].front };
     }
     const c = buildCar(kind, 0xffffff);
     mergeStatic(c.root);
@@ -72,7 +74,9 @@ export class TrafficView {
       for (const l of m.lights) applyLights(l, ls, night);
       if (car.kind === 'truck' && m.trailer) {
         // Tractor drive axle ahead of the rig centre, trailer axles behind; both follow the lane.
-        const sd = car.s + car.dir * 3.0, st = car.s - car.dir * 6.95;
+        // Centre the whole rig (bumper to trailer tail) on the car's position.
+        const ahead = (11.55 - (m.front ?? 5.3)) / 2;
+        const sd = car.s + car.dir * ahead, st = car.s + car.dir * (ahead - 9.95);
         this.road.toWorld(sd, car.lat, this.p);
         this.road.sample(sd, this.t);
         const h = Math.atan2(this.t.tx, this.t.tz) + (car.dir < 0 ? Math.PI : 0) + yaw;

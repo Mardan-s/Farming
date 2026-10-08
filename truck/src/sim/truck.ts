@@ -75,6 +75,10 @@ export class Truck {
   /** Gradient along the heading (rise / run), set by the game from the ground. */
   grade = 0;
   offroad = false;
+  /** Front axle to drive axle, set from the truck model. */
+  wheelbase = WHEELBASE;
+  /** Bumper position ahead of the drive axle. */
+  front = 5.3;
 
   get mass() { return TRACTOR_MASS + (this.hasTrailer ? TRAILER_MASS + this.cargoMass : 0); }
   get kmh() { return Math.abs(this.speed) * 3.6; }
@@ -94,7 +98,7 @@ export class Truck {
 
   /** Largest wheel angle that keeps sideways acceleration sane at this speed. */
   maxWheelAngle(v = this.speed) {
-    const a = Math.abs(v) < 0.5 ? 0.62 : Math.atan((WHEELBASE * 3.6) / (v * v));
+    const a = Math.abs(v) < 0.5 ? 0.62 : Math.atan((this.wheelbase * 3.6) / (v * v));
     return Math.min(0.62, a);
   }
 
@@ -181,7 +185,7 @@ export class Truck {
     const h = dt / steps;
     for (let i = 0; i < steps; i++) {
       const sp = this.speed;
-      const yaw = -(sp * Math.tan(this.wheelAngle)) / WHEELBASE;
+      const yaw = -(sp * Math.tan(this.wheelAngle)) / this.wheelbase;
       this.heading += yaw * h;
       this.x += Math.sin(this.heading) * sp * h;
       this.z += Math.cos(this.heading) * sp * h;
@@ -203,7 +207,7 @@ export class Truck {
         this.tz = kz - Math.cos(th) * TRAILER_LEN;
       }
     }
-    this.latAccel = damp(this.latAccel, this.speed * this.speed * Math.tan(this.wheelAngle) / WHEELBASE, 5, dt);
+    this.latAccel = damp(this.latAccel, this.speed * this.speed * Math.tan(this.wheelAngle) / this.wheelbase, 5, dt);
     this.wheelSpin += (this.speed / WHEEL_R) * dt;
     this.odometer += Math.abs(this.speed) * dt;
   }

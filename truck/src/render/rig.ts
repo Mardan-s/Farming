@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import type { TrailerKind } from '../sim/jobs';
-import { HITCH_AHEAD, TRAILER_LEN, Truck, WHEELBASE } from '../sim/truck';
+import { HITCH_AHEAD, TRAILER_LEN, Truck } from '../sim/truck';
 import type { World } from '../sim/world';
 import { clamp, damp } from '../util';
 import { MAT } from './materials';
 import type { TruckLook } from '../sim/trucks';
 import { LightState, Trailer, Tractor, applyLights, buildTrailer, buildTractor } from './vehicles';
+import { setCabAmbient } from './interior';
+import { needleAngle, setPanelLights, GaugeId } from './cockpit';
 import type { Particles } from './fx';
 
 // The player's rig on screen: places the tractor and trailer on the ground, animates the cab
@@ -41,6 +43,16 @@ export class RigView {
   private dashTex: THREE.CanvasTexture;
   private dashT = 0;
   private interiorView = false;
+  /** Canvas mirrored onto the dashboard sat-nav (the HUD minimap). */
+  gpsSource: HTMLCanvasElement | null = null;
+  private gpsTex: THREE.CanvasTexture | null = null;
+  private gpsT = 0;
+  private ttCanvas = Object.assign(document.createElement('canvas'), { width: 1024, height: 48 });
+  private ttTex: THREE.CanvasTexture | null = null;
+  private ttKey = '';
+  /** Smoothed gauge readings, so needles swing rather than jump. */
+  private read: Partial<Record<GaugeId, number>> = {};
+  private wipePh = 0;
   /** Cab-local eye position for the driver's view. */
   readonly eye = new THREE.Object3D();
   private v = new THREE.Vector3();
@@ -51,7 +63,7 @@ export class RigView {
     this.mirrorRes = mirrorRes;
     this.beamMat = new THREE.MeshBasicMaterial({ map: beamTexture(), color: 0xfff0d8, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false });
     this.dashCanvas = document.createElement('canvas');
-    this.dashCanvas.width = 512; this.dashCanvas.height = 200;
+    this.dashCanvas.width = 256; this.dashCanvas.height = 360;
     this.dashTex = new THREE.CanvasTexture(this.dashCanvas);
     this.dashTex.colorSpace = THREE.SRGBColorSpace;
     this.fit(look);
@@ -66,12 +78,13 @@ export class RigView {
     if (pose) { this.tractor.root.position.copy(pose.p); this.tractor.root.rotation.copy(pose.r); }
     // Re-pivot the cab around its floor so pitch and roll look like cab suspension.
     const cab = this.tractor.cab;
+    const fit = this.tractor.fit;
     this.cabPivot = new THREE.Group();
     this.tractor.root.add(this.cabPivot);
-    this.cabPivot.position.set(0, 1.25, 3.9);
+    this.cabPivot.position.copy(fit.pivot);
     this.cabPivot.add(cab);
-    cab.position.set(0, -1.25, -3.9);
-    this.eye.position.set(0.62, 2.98, 4.05);
+    cab.position.copy(fit.pivot).negate();
+    this.eye.position.copy(fit.eye);
     cab.add(this.eye);
     this.scene.add(this.tractor.root);
     this.heads = [];
@@ -79,35 +92,44 @@ export class RigView {
     const offsets = this.headlights >= 2 ? [0.86, -0.86] : this.headlights === 1 ? [0] : [];
     for (const x of offsets) {
       const l = new THREE.SpotLight(0xfff1dc, 0, 170, 0.4, 0.75, 1.0);
-      l.position.set(x, 1.55, 5.35);
-      l.target.position.set(x * 0.4, 0, 60);
+      l.position.set(x, fit.head.y + 0.43, fit.head.z);
+      l.target.position.set(x * 0.4, 0, fit.head.z + 55);
       cab.add(l, l.target);
       this.heads.push(l);
     }
-    for (const x of [0.86, -0.86]) {
+    for (const x of [fit.head.x, -fit.head.x]) {
       const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 5.5, 26, 20, 1, true), this.beamMat);
       beam.rotation.x = -Math.PI / 2 + 0.06;
-      beam.position.set(x, 1.0, 5.3 + 13);
+      beam.position.set(x, fit.head.y - 0.12, fit.head.z + 13);
       cab.add(beam);
       this.beams.push(beam);
     }
     if (this.tractor.dashScreen) (this.tractor.dashScreen.material as THREE.MeshBasicMaterial).map = this.dashTex;
+    this.gpsTex = null;
+    this.ttTex = null;
+    this.ttKey = '';
+    const tt = this.tractor.cockpit?.telltales;
+    if (tt) {
+      this.ttTex = new THREE.CanvasTexture(this.ttCanvas);
+      this.ttTex.colorSpace = THREE.SRGBColorSpace;
+      (tt.material as THREE.MeshBasicMaterial).map = this.ttTex;
+    }
     // Live rear-view mirrors: a small camera at each main mirror renders into the glass.
     this.mirrors = [];
     if (this.mirrorRes) {
-      const winY = 1.25 + 1.15 + ([2.6, 2.85, 3.0][this.tractor.model] - 1.15) * 0.42 + 0.02;
+      const m = fit.mirror, [mw, mh] = fit.mirrorSize;
       for (const side of [1, -1]) {
-        const rt = new THREE.WebGLRenderTarget(this.mirrorRes, Math.round(this.mirrorRes * 2.6), { type: THREE.HalfFloatType });
+        const rt = new THREE.WebGLRenderTarget(this.mirrorRes, Math.round(this.mirrorRes * (mh / mw)), { type: THREE.HalfFloatType });
         rt.texture.repeat.set(-1, 1);
         rt.texture.offset.set(1, 0);
-        const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.58), new THREE.MeshBasicMaterial({ map: rt.texture }));
-        screen.position.set(side * 1.66, winY + 0.05, 4.878);
+        const screen = new THREE.Mesh(new THREE.PlaneGeometry(mw, mh), new THREE.MeshBasicMaterial({ map: rt.texture }));
+        screen.position.set(side * m.x, m.y, m.z - 0.072);
         screen.rotation.y = Math.PI;
         screen.visible = false;
         cab.add(screen);
-        const c = new THREE.PerspectiveCamera(26, 0.18 / 0.58, 0.5, 900);
-        c.position.set(side * 1.7, winY + 0.05, 4.85);
-        c.lookAt(new THREE.Vector3(side * 2.15, winY - 0.6, -10));
+        const c = new THREE.PerspectiveCamera(26, mw / mh, 0.5, 900);
+        c.position.set(side * (m.x + 0.04), m.y, m.z - 0.1);
+        c.lookAt(new THREE.Vector3(side * (m.x + 0.5), m.y - 0.65, -10));
         cab.add(c);
         this.mirrors.push({ rt, screen, cam: c });
       }
@@ -154,19 +176,21 @@ export class RigView {
     for (const b of this.beams) b.visible = !on;
     for (const m of this.mirrors ?? []) m.screen.visible = on;
     for (const o of this.tractor.exterior) o.visible = !on;
+    for (const o of this.tractor.cabDetail) o.visible = on;
   }
 
   update(dt: number, time: number, t: Truck, lights: LightState, night: number, fog: number, fx: { smoke: Particles; spray: Particles }, wet: number) {
     const w = this.world;
     const root = this.tractor.root;
     // --- tractor on the ground
-    const fr = t.tractorPoint(WHEELBASE, 0), lf = t.tractorPoint(WHEELBASE * 0.5, 1.1), rt = t.tractorPoint(WHEELBASE * 0.5, -1.1);
+    const wb = t.wheelbase;
+    const fr = t.tractorPoint(wb, 0), lf = t.tractorPoint(wb * 0.5, 1.1), rt = t.tractorPoint(wb * 0.5, -1.1);
     const hR = w.groundHeight(t.x, t.z), hF = w.groundHeight(fr.x, fr.z);
     const hL = w.groundHeight(lf.x, lf.z), hRt = w.groundHeight(rt.x, rt.z);
     root.position.set(t.x, hR, t.z);
     root.rotation.order = 'YXZ';
-    root.rotation.set(-Math.atan2(hF - hR, WHEELBASE), t.heading, Math.atan2(hL - hRt, 2.2));
-    t.grade = (hF - hR) / WHEELBASE;
+    root.rotation.set(-Math.atan2(hF - hR, wb), t.heading, Math.atan2(hL - hRt, 2.2));
+    t.grade = (hF - hR) / wb;
     // Cab suspension: dive under braking, squat on throttle, lean out of turns, idle shake.
     const shake = Math.sin(time * (t.rpm / 60) * Math.PI * 2 * 3) * 0.0012 * (1.3 - Math.min(1, Math.abs(t.speed) / 10));
     this.cabPivot.rotation.x = damp(this.cabPivot.rotation.x, clamp(-t.accel * 0.007, -0.045, 0.05) + shake, 6, dt);
@@ -232,35 +256,104 @@ export class RigView {
     }
     this.dashT -= dt;
     if (this.dashT <= 0 && this.interiorView) { this.dashT = 0.1; this.drawDash(t); }
+    if (this.interiorView && this.tractor.cockpit) this.updateGauges(dt, t, lights, night);
+    if (this.interiorView) setCabAmbient(0.03 + (1 - night) * 0.17);
+    // Sat-nav: shows the same map as the HUD.
+    this.gpsT -= dt;
+    const gps = this.tractor.gpsScreen;
+    if (gps && this.gpsSource && this.interiorView && this.gpsT <= 0 && this.gpsSource.width > 0) {
+      this.gpsT = 0.2;
+      if (!this.gpsTex || this.gpsTex.image !== this.gpsSource) {
+        this.gpsTex = new THREE.CanvasTexture(this.gpsSource);
+        this.gpsTex.colorSpace = THREE.SRGBColorSpace;
+        const m = gps.material as THREE.MeshBasicMaterial;
+        m.map = this.gpsTex;
+        m.color.setScalar(0.85);
+        m.needsUpdate = true;
+      }
+      this.gpsTex.needsUpdate = true;
+    }
+    // Wipers sweep while it rains (faster in a downpour) and park when it stops.
+    const wipers = this.tractor.wipers;
+    if (wipers.length) {
+      if (fog > 0.15 || this.wipePh % 1 > 0.02) this.wipePh += dt * (fog > 0.6 ? 1.3 : 0.8);
+      const a = Math.sin((this.wipePh % 1) * Math.PI) * 1.45;
+      for (const wp of wipers) wp.rotation.z = Math.PI / 2 - 0.08 - a;
+    }
   }
 
+  /** Needles, warning lights and panel lighting. */
+  private updateGauges(dt: number, t: Truck, lights: LightState, night: number) {
+    const ck = this.tractor.cockpit!;
+    const on = t.rpm > 300;
+    const target: Record<GaugeId, number> = {
+      tach: t.rpm / 100,
+      speedo: t.kmh,
+      water: on ? 82 + t.load * 6 : 40,
+      oil: on ? 22 + (t.rpm / 2100) * 42 : 0,
+      volts: on ? 14.1 : 12.4,
+      trans: on ? 70 + t.load * 12 : 40,
+      air1: 118 - t.braking * 14,
+      air2: 121 - t.braking * 11,
+      fuel: (t.fuel / 600) * 4,
+      def: 3.2,
+    };
+    const k = 1 - Math.exp(-dt * 8);
+    for (const id of Object.keys(target) as GaugeId[]) {
+      const v = (this.read[id] ??= target[id]) + (target[id] - (this.read[id] ?? 0)) * k;
+      this.read[id] = v;
+      ck.gauges[id].needle.rotation.z = needleAngle(id, v);
+    }
+    setPanelLights(night);
+    // Tell-tales: redraw only when something changes.
+    const blink = this.blink < 0.4;
+    const st = {
+      l: lights.indL && blink, r: lights.indR && blink, hi: lights.high, park: Math.abs(t.speed) < 0.2 && t.braking > 0.5,
+      cruise: t.cruise != null, jake: t.braking > 0 && t.speed > 3, fuel: t.fuel < 90, belt: false, dmg: t.damage > 0.3,
+    };
+    const key = JSON.stringify(st);
+    if (key !== this.ttKey && this.ttTex) { this.ttKey = key; this.drawTelltales(st); this.ttTex.needsUpdate = true; }
+  }
+
+  private drawTelltales(s: Record<string, boolean>) {
+    const g = this.ttCanvas.getContext('2d')!;
+    g.fillStyle = '#050607'; g.fillRect(0, 0, 1024, 48);
+    const icons: [string, string, boolean][] = [
+      ['◀', '#3cff6a', s.l], ['HI', '#3a8cff', s.hi], ['(P)', '#ff3030', s.park], ['AIR', '#ff3030', false], ['CHECK', '#ffb020', s.dmg],
+      ['ABS', '#ffb020', false], ['CRUISE', '#3cff6a', s.cruise], ['JAKE', '#3cff6a', s.jake], ['FUEL', '#ffb020', s.fuel], ['DEF', '#ffb020', false],
+      ['WIF', '#ffb020', false], ['▶', '#3cff6a', s.r],
+    ];
+    const w = 1024 / icons.length;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    icons.forEach(([txt, col, lit], i) => {
+      g.fillStyle = lit ? col : '#24272b';
+      g.font = `800 ${txt.length > 3 ? 20 : 28}px "Barlow Condensed", Arial, sans-serif`;
+      if (lit) { g.shadowColor = col; g.shadowBlur = 12; } else g.shadowBlur = 0;
+      g.fillText(txt, w * (i + 0.5), 25);
+    });
+    g.shadowBlur = 0;
+  }
+
+  /** The small display between the big dials: gear, speed, cruise, odometer, clock. */
   private drawDash(t: Truck) {
     const g = this.dashCanvas.getContext('2d')!;
-    const W = 512, H = 200;
-    g.fillStyle = '#05070a'; g.fillRect(0, 0, W, H);
-    const gauge = (cx: number, value: number, max: number, label: string, unit: string, redFrom: number) => {
-      const r = 82, a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
-      g.lineWidth = 6; g.strokeStyle = '#1d2733'; g.beginPath(); g.arc(cx, 105, r, a0, a1); g.stroke();
-      g.strokeStyle = '#ff3b30'; g.beginPath(); g.arc(cx, 105, r, a0 + (a1 - a0) * (redFrom / max), a1); g.stroke();
-      g.fillStyle = '#9fb3c8';
-      for (let k = 0; k <= 10; k++) {
-        const a = a0 + ((a1 - a0) * k) / 10;
-        g.fillRect(cx + Math.cos(a) * (r - 14) - 1.5, 105 + Math.sin(a) * (r - 14) - 1.5, 3, 3);
-      }
-      const a = a0 + (a1 - a0) * Math.min(1, value / max);
-      g.strokeStyle = '#ff8a1f'; g.lineWidth = 4; g.beginPath(); g.moveTo(cx, 105); g.lineTo(cx + Math.cos(a) * (r - 8), 105 + Math.sin(a) * (r - 8)); g.stroke();
-      g.fillStyle = '#e8f1ff'; g.font = '700 30px "Barlow Condensed", sans-serif'; g.textAlign = 'center';
-      g.fillText(label, cx, 150);
-      g.font = '600 13px "Barlow", sans-serif'; g.fillStyle = '#6f8296'; g.fillText(unit, cx, 168);
-    };
-    gauge(100, t.kmh, 125, String(Math.round(t.kmh)), 'km/h', 90);
-    gauge(412, t.rpm, 2500, (t.rpm / 1000).toFixed(1), 'x1000 rpm', 2000);
-    g.textAlign = 'center';
-    g.fillStyle = '#ffb347'; g.font = '800 44px "Barlow Condensed", sans-serif';
-    g.fillText(t.drive === 'D' ? `D${t.gear}` : t.drive, 256, 92);
-    g.fillStyle = '#6f8296'; g.font = '600 14px "Barlow", sans-serif';
-    g.fillText(`FUEL ${Math.round(t.fuel)} L`, 256, 128);
-    if (t.cruise != null) { g.fillStyle = '#3dd68c'; g.fillText(`CRUISE ${Math.round(t.cruise * 3.6)}`, 256, 150); }
+    const W = 256, H = 360;
+    const bg = g.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0d1824'); bg.addColorStop(1, '#05090e');
+    g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+    g.fillStyle = '#ffb347'; g.font = '800 92px "Barlow Condensed", sans-serif';
+    g.fillText(t.drive === 'D' ? String(t.gear) : t.drive, W / 2, 104);
+    g.fillStyle = '#6f8aa6'; g.font = '700 22px "Barlow", sans-serif';
+    g.fillText(t.drive === 'D' ? 'AUTO' : t.drive === 'R' ? 'REVERSE' : 'NEUTRAL', W / 2, 136);
+    g.fillStyle = '#e8f1ff'; g.font = '700 54px "Barlow Condensed", sans-serif';
+    g.fillText(String(Math.round(t.kmh)), W / 2, 210);
+    g.fillStyle = '#6f8aa6'; g.font = '600 18px "Barlow", sans-serif'; g.fillText('km/h', W / 2, 232);
+    g.fillStyle = t.cruise != null ? '#3dd68c' : '#2a3a4c'; g.font = '700 22px "Barlow", sans-serif';
+    g.fillText(t.cruise != null ? `CC ${Math.round(t.cruise * 3.6)}` : 'CC --', W / 2, 276);
+    g.fillStyle = '#9fb7cf'; g.font = '600 20px "Barlow", sans-serif';
+    g.fillText(`${(t.odometer / 1000 + 284113).toFixed(1)} km`, W / 2, 316);
+    g.fillStyle = '#4c6580'; g.fillRect(24, 330, W - 48, 2);
     this.dashTex.needsUpdate = true;
   }
 }
