@@ -22,7 +22,6 @@ import { Post } from './render/post';
 import { Hud } from './ui/hud';
 import { Input, SteerMode } from './ui/input';
 import { Audio, TrafficSound } from './audio';
-import { WHEELBASE } from './sim/truck';
 import { clamp, lerp, smoothstep } from './util';
 
 // Sun glints on near-mirror surfaces can exceed the half-float range and turn into infinities that
@@ -272,7 +271,7 @@ async function boot() {
       if (open) { camBefore = cam.mode; cam.mode = 'showcase'; rig.setInterior(false); }
       else { cam.mode = camBefore; rig.setInterior(cam.mode === 'cab'); }
     },
-    preview: (model) => rig.fit(model == null ? game.look : { ...game.look, model, chrome: game.look.chrome || model === 2, lightbar: game.look.lightbar || model === 2 }),
+    preview: (model) => rig.fit(model == null ? game.look : { ...game.look, model, chrome: game.look.chrome || !!TRUCK_MODELS[model].dressed, lightbar: game.look.lightbar || (!!TRUCK_MODELS[model].dressed && TRUCK_MODELS[model].style === 'cabover') }),
     chooseTruck: (id) => {
       const ok = game.chooseTruck(id);
       if (ok) { rig.fit(game.look); audio.cylinders = TRUCK_MODELS[game.model].cylinders; } else hud!.toast('Not enough money yet', 'bad');
@@ -468,12 +467,12 @@ async function boot() {
     game.traffic.honks = [];
     // Expansion joints on the viaduct: a thump for every axle of the rig.
     for (const js of joints) {
-      const front = game.roadS + WHEELBASE;
+      const front = game.roadS + game.truck.wheelbase;
       if (world.road.delta(lastFront, js) > 0 && world.road.delta(front, js) <= 0 && Math.abs(world.road.delta(front, js)) < 20 && game.roadLat > 0) {
         audio.joint(Math.abs(t.speed), t.hasTrailer ? [0, 3.9, 12.54, 13.85, 15.16] : [0, 3.9]);
       }
     }
-    lastFront = game.roadS + WHEELBASE;
+    lastFront = game.roadS + game.truck.wheelbase;
 
     fpsAvg = lerp(fpsAvg, 1 / Math.max(1e-3, rawDt), 0.05);
     hud!.update(dt, fpsAvg);

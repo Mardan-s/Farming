@@ -70,7 +70,7 @@ A second game lives in `truck/`: **Euro Haul**, a mobile-first truck driving sim
 
 **How to play.** Pick a job on the depot's job board: cargo, weight, destination, pay and time limit. The loaded trailer (curtain-sider, reefer, container or tanker) waits in a green-lit bay: reverse squarely under it and the fifth wheel locks on (or pay the yard crew €150 to do it). Drive to the destination, where an orange bay and a light beam mark the spot. Stop anywhere in the yard and tap **Deliver**, or back the trailer neatly into the bay for a 10% parking bonus. Damage (barrier hits, crashes) and lateness cut the pay, and fragile cargo is extra sensitive. Collisions with traffic also cost a fine, and speed cameras guard the 80 km/h zones through each town. Refuel and repair at depots.
 
-**Garage.** Save up for the **Titan 580** (€32,000) and the **Apex V8 750** (€78,000), each with its own cab, grille, power and engine sound. Fit engine tunes, a chrome pack, a roof light bar and a triple air horn, and repaint the cab and stripes at any depot.
+**Garage.** You start in the **Liberty 505**, an American-style long-nose sleeper with a sloping hood, chrome grille, round tanks and twin stacks. Save up for the raised-roof **Patriot 625** (€54,000), or the European cab-overs: the free **Valor 460**, the **Titan 580** (€32,000) and the **Apex V8 750** (€78,000). Each has its own cab, grille, power and engine sound. Fit engine tunes, a chrome pack, a roof light bar and a triple air horn, and repaint the cab and stripes at any depot.
 
 **Radio.** Three stations of music generated live in the browser: Alpen FM (lo-fi), Autobahn Wave (synthwave) and Route 66 (blues). It plays clear in the cab and muffled outside.
 

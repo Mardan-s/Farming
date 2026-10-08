@@ -3,7 +3,7 @@ import type { Delivery, Job } from '../sim/jobs';
 import type { Depot } from '../sim/world';
 import { FUEL_CAP } from '../sim/truck';
 import { formatMoney } from '../util';
-import { ACCENTS, TRUCK_MODELS, UPGRADES, UpgradeId } from '../sim/trucks';
+import { ACCENTS, GARAGE_ORDER, TRUCK_MODELS, UPGRADES, UpgradeId } from '../sim/trucks';
 import type { Tier } from '../render/quality';
 import { ICON, WHEEL_SVG } from './icons';
 import { Input, SteerMode } from './input';
@@ -352,7 +352,7 @@ export class Hud {
     const render = () => {
       (el.querySelector('[data-g="cash"]') as HTMLElement).textContent = `${formatMoney(g.money)} in the bank`;
       if (tab === 'trucks') {
-        body.innerHTML = TRUCK_MODELS.map((m) => {
+        body.innerHTML = GARAGE_ORDER.map((id) => TRUCK_MODELS[id]).map((m) => {
           const owned = g.owned.includes(m.id), current = g.model === m.id, sel = (previewing ?? g.model) === m.id;
           const btn = current ? '<span class="tagok">DRIVING</span>' : owned ? `<button class="btn small" data-buy="${m.id}">Drive this</button>` : `<button class="btn small" data-buy="${m.id}" ${g.money < m.price ? 'disabled' : ''}>Buy ${formatMoney(m.price)}</button>`;
           return `<div class="tcard ${sel ? 'sel' : ''}" data-m="${m.id}"><div class="trow"><b>${m.name}</b>${btn}</div>
@@ -371,7 +371,7 @@ export class Hud {
         }));
       } else if (tab === 'upgrades') {
         body.innerHTML = UPGRADES.map((u) => {
-          const has = g.upgrades.has(u.id) || (g.model === 2 && (u.id === 'chrome' || u.id === 'lightbar'));
+          const has = g.upgrades.has(u.id) || (u.id === 'chrome' && g.look.chrome) || (u.id === 'lightbar' && g.look.lightbar);
           return `<div class="tcard"><div class="trow"><b>${u.name}</b>${has ? '<span class="tagok">FITTED</span>' : `<button class="btn small" data-u="${u.id}" ${g.money < u.price ? 'disabled' : ''}>${formatMoney(u.price)}</button>`}</div><div class="meta">${u.detail}</div></div>`;
         }).join('');
         body.querySelectorAll<HTMLElement>('[data-u]').forEach((b) => b.addEventListener('click', () => { this.act.buyUpgrade(b.dataset.u as UpgradeId); render(); }));

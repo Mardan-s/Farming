@@ -8,6 +8,11 @@ import { normalFromCanvas } from './textures';
 import type { TrailerKind } from '../sim/jobs';
 import type { CarKind } from '../sim/traffic';
 import { HITCH_AHEAD, TRAILER_LEN, WHEELBASE } from '../sim/truck';
+import { buildConventional } from './conventional';
+import { buildInterior, isInteriorDetail, isInteriorMaterial } from './interior';
+
+/** Interior parts are in the cab's shadow already, so they never cast one. */
+export const insideMat = (m: THREE.Material | THREE.Material[]) => (Array.isArray(m) ? m.some(isInteriorMaterial) : isInteriorMaterial(m));
 
 // Procedural vehicle models. Local frame: +z forward, +x is the vehicle's LEFT side, y up,
 // origin on the ground under the drive axle (tractor) or the axle group centre (trailer).
@@ -159,14 +164,14 @@ function holedRim(base: THREE.Material) {
   return m;
 }
 
-const POINTER = new THREE.MeshStandardMaterial({ color: 0xff7a00, roughness: 0.5 });
-const ADBLUE = new THREE.MeshStandardMaterial({ color: 0x1f5fd1, roughness: 0.4 });
+export const POINTER = new THREE.MeshStandardMaterial({ color: 0xff7a00, roughness: 0.5 });
+export const ADBLUE = new THREE.MeshStandardMaterial({ color: 0x1f5fd1, roughness: 0.4 });
 /** Retro-reflective conspicuity tape: glows a little at night, more when a light hits it. */
 const TAPE_RED = new THREE.MeshStandardMaterial({ color: 0xc8102e, emissive: 0x500008, roughness: 0.3, metalness: 0.2 });
 const TAPE_WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, emissive: 0x303030, roughness: 0.3, metalness: 0.2 });
 const TAPE_YELLOW = new THREE.MeshStandardMaterial({ color: 0xf6c400, emissive: 0x403000, roughness: 0.3, metalness: 0.2 });
 let checkerTex: THREE.Texture | null = null;
-function checker() {
+export function checker() {
   if (!checkerTex) {
     const c = document.createElement('canvas'); c.width = c.height = 128;
     const g = c.getContext('2d')!;
@@ -180,11 +185,10 @@ function checker() {
   }
   return checkerTex;
 }
-const CHECKER = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.85, roughness: 0.35 });
-const PARK_KNOB = new THREE.MeshStandardMaterial({ color: 0xf2c200, roughness: 0.4 });
+export const CHECKER = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.85, roughness: 0.35 });
 /** Brushed aluminium: fine streaks in colour and roughness. Texture is made on first use. */
 const BRUSHED = new THREE.MeshStandardMaterial({ color: 0xb4b9be, metalness: 1, roughness: 0.42 });
-function brushed() {
+export function brushed() {
   if (BRUSHED.map) return BRUSHED;
   const c = document.createElement('canvas'); c.width = 8; c.height = 256;
   const g = c.getContext('2d')!;
@@ -199,7 +203,7 @@ function brushed() {
 }
 
 /** D-section tank profile (flat inboard face at x = -w/2), extruded along z. */
-function tankGeometry(w: number, h: number, len: number) {
+export function tankGeometry(w: number, h: number, len: number) {
   const sh = new THREE.Shape();
   const r = h * 0.42, ri = 0.05;
   sh.moveTo(-w / 2, -h / 2 + ri);
@@ -216,54 +220,8 @@ function tankGeometry(w: number, h: number, len: number) {
   return g;
 }
 
-let interior: Record<'floor' | 'liner' | 'trim' | 'seat' | 'quilt' | 'curtain' | 'dash' | 'leather' | 'button', THREE.MeshStandardMaterial> | null = null;
-/** Cab trim materials: woven seat fabric, a pleated curtain, soft-touch dash and leather. */
-function interiorMats() {
-  if (interior) return interior;
-  const weave = (base: string, line: string, step: number) => {
-    const c = document.createElement('canvas'); c.width = c.height = 128;
-    const g = c.getContext('2d')!;
-    g.fillStyle = base; g.fillRect(0, 0, 128, 128);
-    g.strokeStyle = line; g.lineWidth = 1;
-    for (let k = 0; k < 128; k += step) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k, 128); g.stroke(); g.beginPath(); g.moveTo(0, k); g.lineTo(128, k); g.stroke(); }
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(3, 3);
-    return t;
-  };
-  const pleats = document.createElement('canvas'); pleats.width = 256; pleats.height = 8;
-  const pg = pleats.getContext('2d')!;
-  for (let x = 0; x < 256; x++) { const v = 40 + Math.sin(x / 7) * 18; pg.fillStyle = `rgb(${v},${v - 4},${v - 10})`; pg.fillRect(x, 0, 1, 8); }
-  const pt = new THREE.CanvasTexture(pleats); pt.colorSpace = THREE.SRGBColorSpace;
-  interior = {
-    floor: new THREE.MeshStandardMaterial({ map: weave('#1a1a1b', '#222224', 6), roughness: 0.95 }),
-    liner: new THREE.MeshStandardMaterial({ map: weave('#9a958c', '#8c877f', 4), roughness: 0.95 }),
-    trim: new THREE.MeshStandardMaterial({ color: 0x5a564e, roughness: 0.85 }),
-    seat: new THREE.MeshStandardMaterial({ map: weave('#2c2e33', '#3a3d44', 3), roughness: 0.9 }),
-    quilt: new THREE.MeshStandardMaterial({ map: weave('#4a3a2e', '#5a4838', 16), roughness: 0.95 }),
-    curtain: new THREE.MeshStandardMaterial({ map: pt, roughness: 0.95, side: THREE.DoubleSide }),
-    dash: new THREE.MeshStandardMaterial({ color: 0x33363c, metalness: 0.05, roughness: 0.62, side: THREE.DoubleSide }),
-    leather: new THREE.MeshStandardMaterial({ color: 0x18181a, roughness: 0.5 }),
-    button: new THREE.MeshStandardMaterial({ color: 0x0f1012, roughness: 0.4, metalness: 0.2 }),
-  };
-  // Daylight bouncing round the cab: the shell shadows the interior from the sun, so each surface
-  // glows faintly with its own colour (scaled with daylight by setCabAmbient).
-  for (const m of Object.values(interior)) {
-    if (m.map) { m.emissive.setRGB(1, 1, 1); m.emissiveMap = m.map; } else m.emissive.copy(m.color);
-    m.emissiveIntensity = 0.3;
-  }
-  return interior;
-}
-
-/** Strength of the bounced daylight inside the cab (0 at night). */
-export function setCabAmbient(v: number) {
-  if (!interior) return;
-  for (const m of Object.values(interior)) m.emissiveIntensity = v;
-}
-
 /** A wheel whose outer face points to the given side (+1 left, -1 right). Returns [steer group, spin group]. */
-function wheel(r: number, w: number, side: number, rimMat: THREE.Material = MAT.rim, dish = true, detail = true) {
+export function wheel(r: number, w: number, side: number, rimMat: THREE.Material = MAT.rim, dish = true, detail = true) {
   const g = wheelGeometry(r, w, dish);
   const steer = new THREE.Group();
   const spin = new THREE.Group();
@@ -336,12 +294,12 @@ export function applyLights(m: LightMats, s: LightState, night: number) {
 
 // ------------------------------------------------------------------ tractor
 
-const ARCH = new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.6, side: THREE.DoubleSide });
+export const ARCH = new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.6, side: THREE.DoubleSide });
 /** Black glass surrounds: solid panels seen from outside, hidden from the driver's seat. */
 const BORDER = new THREE.MeshStandardMaterial({ color: 0x0d0e10, roughness: 0.4, metalness: 0.2 });
 /** Clear polycarbonate headlight cover. */
-const LENS = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0, roughness: 0.02, transparent: true, opacity: 0.18, depthWrite: false });
-const HORN = new THREE.MeshStandardMaterial({ color: 0xf4f6f8, metalness: 1, roughness: 0.08, side: THREE.DoubleSide });
+export const LENS = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0, roughness: 0.02, transparent: true, opacity: 0.18, depthWrite: false });
+export const HORN = new THREE.MeshStandardMaterial({ color: 0xf4f6f8, metalness: 1, roughness: 0.08, side: THREE.DoubleSide });
 
 export interface Tractor {
   root: THREE.Group;
@@ -360,10 +318,14 @@ export interface Tractor {
   wipers: THREE.Group[];
   /** Exterior-only meshes (window surrounds) to hide in the cab view. */
   exterior: THREE.Object3D[];
+  /** Small interior parts, only shown in the cab view. */
+  cabDetail: THREE.Object3D[];
+  /** Where the rig puts things (cab-local): cab suspension pivot, driver's eye, headlamps, main mirror. */
+  fit: { pivot: THREE.Vector3; eye: THREE.Vector3; head: THREE.Vector3; mirror: THREE.Vector3; mirrorSize: [number, number] };
 }
 
 /** Cab paint: the panel texture (shut-lines, frit, lettering) under a flaky metallic clear coat. */
-function shellPaint(color: number, panel: { map: THREE.Texture; height: HTMLCanvasElement }, lod: boolean) {
+export function shellPaint(color: number, panel: { map: THREE.Texture; height: HTMLCanvasElement }, lod: boolean) {
   const normalMap = lod ? null : normalFromCanvas(panel.height, 2.5);
   const m = clearcoatOn()
     ? new THREE.MeshPhysicalMaterial({ color, map: panel.map, normalMap, normalScale: new THREE.Vector2(0.35, 0.35), metalness: 0.55, roughness: 0.33, clearcoat: 1, clearcoatRoughness: 0.04 })
@@ -372,6 +334,7 @@ function shellPaint(color: number, panel: { map: THREE.Texture; height: HTMLCanv
 }
 
 export function buildTractor(look: TruckLook, opts: { interior: boolean; lod?: boolean; plate?: string } = { interior: true }): Tractor {
+  if (TRUCK_MODELS[look.model].style === 'conventional') return buildConventional(look, opts);
   const root = new THREE.Group();
   const chassis = new THREE.Group();
   const cab = new THREE.Group();
@@ -657,138 +620,15 @@ export function buildTractor(look: TruckLook, opts: { interior: boolean; lod?: b
     cab.add(plate);
   }
 
-  // --- interior (only seen from the driver's seat)
-  const steeringWheel = new THREE.Group();
+  // --- interior (only seen from the driver's seat): see interior.ts
+  let steeringWheel = new THREE.Group();
   let dashScreen: THREE.Mesh | null = null;
   let gpsScreen: THREE.Mesh | null = null;
+  let eye = new THREE.Vector3(0.62, 2.98, 3.98);
   if (opts.interior) {
-    const inner = new THREE.Group();
-    cab.add(inner);
-    const IW = 1.17, top = y0 + H - 0.16, floor = 1.36, back = 2.99;
-    const frontZ = 5.12;
-    const rb = (w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number, r = 0.04) => {
-      const m = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 2, Math.min(r, w / 2.2, h / 2.2, d / 2.2)), mat);
-      m.position.set(x, y, z);
-      inner.add(m);
-      return m;
-    };
-    const fabric = interiorMats();
-    // Shell: rubber floor mat, light headliner, back wall.
-    box(IW * 2, 0.04, frontZ - back, fabric.floor, 0, floor, (frontZ + back) / 2, inner);
-    box(IW * 2, 0.04, frontZ - back, fabric.liner, 0, top, (frontZ + back) / 2, inner);
-    box(IW * 2, top - floor, 0.04, fabric.trim, 0, (top + floor) / 2, back, inner);
-    // Sleeper: mattress, a quilted cover and the curtain drawn half across.
-    rb(IW * 2 - 0.06, 0.22, 0.78, fabric.seat, 0, 1.78, back + 0.42, 0.08);
-    rb(IW * 2 - 0.1, 0.06, 0.7, fabric.quilt, 0, 1.92, back + 0.42, 0.03);
-    const curtain = new THREE.Mesh(new THREE.PlaneGeometry(1.1, top - 1.95), fabric.curtain);
-    curtain.position.set(0.55, (top + 1.95) / 2, back + 0.84);
-    inner.add(curtain);
-    // Overhead storage shelf across the top of the windscreen, with lockers and a reading light.
-    rb(IW * 2, 0.32, 0.55, fabric.trim, 0, top - 0.2, back + 0.45, 0.05);
-    for (const x of [-0.75, 0, 0.75]) rb(0.6, 0.24, 0.02, fabric.dash, x, top - 0.2, back + 0.73, 0.02);
-    rb(IW * 2 - 0.1, 0.18, 0.32, fabric.trim, 0, shape.yAt(shape.win.t1) + 0.12, frontZ - 0.32, 0.05);
-    box(0.25, 0.02, 0.12, lights.roof, 0, top - 0.02, 4.0, inner);
-    for (const side of [1, -1]) {
-      const x = side * IW;
-      // Door trim: lower panel with armrest, door pocket and speaker; upper trim; B-pillar.
-      box(0.04, 2.3 - floor, frontZ - back, fabric.trim, x, (2.3 + floor) / 2, (frontZ + back) / 2, inner);
-      box(0.04, top - 3.3, frontZ - back, fabric.liner, x, (top + 3.3) / 2, (frontZ + back) / 2, inner);
-      box(0.04, 3.3 - 2.3, 4.15 - back, fabric.trim, x, 2.8, (4.15 + back) / 2, inner);
-      box(0.04, 3.3 - 2.3, 0.12, fabric.dash, x, 2.8, 5.08, inner);
-      rb(0.1, 0.07, 0.6, fabric.dash, x - side * 0.06, 2.22, 4.5, 0.03);
-      rb(0.06, 0.18, 0.5, fabric.dash, x - side * 0.04, 1.7, 4.5, 0.02);
-      const spk = cyl(0.08, 0.08, 0.02, fabric.dash, 18); spk.rotation.z = Math.PI / 2; spk.position.set(x - side * 0.03, 1.95, 4.85); inner.add(spk);
-      for (let k = 0; k < 2; k++) box(0.03, 0.015, 0.05, fabric.button, x - side * 0.11, 2.26, 4.4 + k * 0.08, inner);
-      // A-pillars.
-      box(0.1, 1.2, 0.1, fabric.dash, side * 1.12, 2.9, zf(2.9) - 0.06, inner);
-      // Seats: suspension column, cushion with bolsters, backrest, headrest, seat belt.
-      const sx = side * 0.62;
-      const post = cyl(0.08, 0.1, 0.42, MAT.frame, 12); post.position.set(sx, floor + 0.22, 4.12); inner.add(post);
-      rb(0.56, 0.14, 0.56, fabric.seat, sx, 1.93, 4.12, 0.06);
-      for (const bx of [-0.25, 0.25]) rb(0.08, 0.1, 0.5, fabric.seat, sx + bx, 2.02, 4.12, 0.04);
-      const sb = rb(0.56, 0.78, 0.14, fabric.seat, sx, 2.42, 3.82, 0.07);
-      sb.rotation.x = -0.14;
-      for (const bx of [-0.25, 0.25]) { const bol = rb(0.09, 0.62, 0.16, fabric.seat, sx + bx, 2.38, 3.86, 0.04); bol.rotation.x = -0.14; }
-      const head = rb(0.32, 0.22, 0.12, fabric.seat, sx, 2.95, 3.74, 0.06);
-      head.rotation.x = -0.14;
-      const belt = box(0.05, 0.85, 0.01, MAT.rubber, sx + side * 0.18, 2.45, 3.92, inner);
-      belt.rotation.z = side * 0.42;
-    }
-    // Sun visors.
-    for (const x of [0.6, -0.6]) { const v = rb(0.7, 0.03, 0.26, fabric.liner, x, shape.yAt(shape.win.t1) - 0.04, frontZ - 0.32, 0.015); v.rotation.x = 0.35; }
-    // Dashboard: wrap-around top, a brow over the gauges, a centre stack angled at the driver.
-    // The driver's half of the dash top drops away so the instruments sit low under the screen line.
-    const dash = rb(IW + 0.2, 0.16, 0.62, fabric.dash, -(IW - 0.2) / 2, 2.4, 4.85, 0.06);
-    dash.rotation.x = 0.16;
-    const dashD = rb(IW - 0.2, 0.16, 0.62, fabric.dash, (IW + 0.2) / 2, 2.3, 4.85, 0.06);
-    dashD.rotation.x = 0.16;
-    box(IW * 2, 1.0, 0.08, fabric.dash, 0, 1.92, 5.12, inner);
-    const brow = rb(0.72, 0.05, 0.24, fabric.dash, 0.62, 2.7, 4.88, 0.025);
-    brow.rotation.x = 0.12;
-    rb(0.74, 0.32, 0.16, fabric.dash, 0.62, 2.52, 4.98, 0.05);
-    // Demister slots along the foot of the windscreen, round face-level vents at each end.
-    for (let k = -6; k <= 6; k++) { const slot = box(0.11, 0.012, 0.035, fabric.button, k * 0.17, 2.45, Math.min(5.04, zf(2.45) - 0.1), inner); slot.rotation.x = 0.16; }
-    // Lower dash: the solid face below the top, knee-high.
-    rb(IW * 2, 0.7, 0.36, fabric.dash, 0, 1.98, 4.94, 0.06);
-    for (const x of [1.0, -1.0, -0.42]) {
-      const vent = cyl(0.06, 0.06, 0.03, fabric.trim, 16); vent.rotation.x = Math.PI / 2; vent.position.set(x, 2.22, 4.755); inner.add(vent);
-      for (let k = -1; k <= 1; k++) box(0.1, 0.008, 0.02, fabric.button, x, 2.22 + k * 0.028, 4.74, inner);
-    }
-    // Paperwork tray on the passenger side.
-    rb(0.6, 0.03, 0.3, fabric.button, -0.6, 2.5, 4.75, 0.01);
-    const stack = rb(0.56, 0.62, 0.36, fabric.dash, 0.02, 2.14, 4.76, 0.05);
-    stack.rotation.y = -0.32;
-    // Satnav screen on the centre stack (filled from the HUD map by the rig).
-    gpsScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.29, 0.18), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
-    // It stands proud of the dash top in a bezel, turned towards the driver.
-    const bezel = rb(0.34, 0.23, 0.05, fabric.button, 0.04, 2.6, 4.76, 0.02);
-    bezel.rotation.order = 'YXZ';
-    bezel.rotation.set(0.25, -0.32, 0);
-    gpsScreen.position.set(0.04 + Math.sin(0.32) * 0.028, 2.6, 4.76 - Math.cos(0.32) * 0.028);
-    gpsScreen.rotation.order = 'YXZ';
-    gpsScreen.rotation.set(-0.25, Math.PI - 0.32, 0);
-    inner.add(gpsScreen);
-    // Switch panel below the screen, lit amber at night.
-    for (let r = 0; r < 2; r++) for (let k = 0; k < 5; k++) {
-      const sw = box(0.04, 0.025, 0.012, k % 2 ? fabric.button : lights.roof, -0.11 + k * 0.055, 2.12 - r * 0.05, 4.585, inner);
-      sw.rotation.y = -0.32;
-    }
-    // Gear selector stalk, parking brake with its yellow knob, and the pedals.
-    const lever = cyl(0.012, 0.012, 0.22, fabric.button, 6); lever.rotation.z = -1.2; lever.position.set(0.38, 2.44, 4.62); inner.add(lever);
-    const pb = cyl(0.03, 0.03, 0.05, PARK_KNOB, 10); pb.rotation.x = Math.PI / 2; pb.position.set(0.2, 2.25, 4.62); inner.add(pb);
-    for (const [px, w] of [[0.48, 0.12], [0.78, 0.07]] as const) { const pedal = rb(w, 0.2, 0.03, MAT.rubber, px, floor + 0.2, 4.95, 0.01); pedal.rotation.x = -0.6; }
-    dashScreen = new THREE.Mesh(new THREE.PlaneGeometry(0.64, 0.25), new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
-    dashScreen.position.set(0.62, 2.5, 4.895);
-    // Face the driver (yaw half a turn), then tilt the top away so it looks up at them.
-    dashScreen.rotation.order = 'YXZ';
-    dashScreen.rotation.set(-0.3, Math.PI, 0);
-    inner.add(dashScreen);
-    // Steering wheel: leather rim, four spokes with buttons, airbag hub with the badge.
-    steeringWheel.position.set(0.62, 2.52, 4.6);
-    steeringWheel.rotation.x = -0.8;
-    const wheelInner = new THREE.Group();
-    steeringWheel.add(wheelInner);
-    wheelInner.add(new THREE.Mesh(new THREE.TorusGeometry(0.235, 0.028, 12, 48), fabric.leather));
-    for (const a of [0.35, Math.PI - 0.35, -Math.PI / 2 - 0.45, -Math.PI / 2 + 0.45]) {
-      const sp = new THREE.Mesh(new RoundedBoxGeometry(0.2, 0.05, 0.03, 2, 0.012), fabric.dash);
-      sp.position.set(Math.cos(a) * 0.12, Math.sin(a) * 0.12, 0);
-      sp.rotation.z = a;
-      wheelInner.add(sp);
-    }
-    for (const x of [-0.12, 0.12]) for (let k = 0; k < 3; k++) {
-      const btn = box(0.018, 0.012, 0.008, fabric.button, x + (k - 1) * 0.022, 0.035, 0.018);
-      wheelInner.add(btn);
-    }
-    const hub = new THREE.Mesh(new RoundedBoxGeometry(0.15, 0.12, 0.06, 2, 0.025), fabric.dash);
-    wheelInner.add(hub);
-    const badge = cyl(0.02, 0.02, 0.01, MAT.chrome, 14); badge.rotation.x = Math.PI / 2; badge.position.z = 0.032; wheelInner.add(badge);
-    const col = cyl(0.04, 0.05, 0.5, fabric.dash, 10);
-    col.rotation.x = Math.PI / 2 - 0.8;
-    col.position.set(0.62, 2.32, 4.78);
-    inner.add(col);
-    // Indicator and retarder stalks on the column.
-    for (const sxs of [1, -1]) { const st = cyl(0.008, 0.008, 0.16, fabric.dash, 6); st.rotation.z = sxs * 1.35; st.position.set(0.62 + sxs * 0.1, 2.39, 4.69); inner.add(st); }
-    cab.add(steeringWheel);
+    const inner = buildInterior(shape, built.shell, { floor: 1.36 });
+    cab.add(inner.group);
+    ({ steeringWheel, dashScreen, gpsScreen, eye } = inner);
   }
   const headlightAnchor = new THREE.Object3D();
   headlightAnchor.position.set(0, 1.55, 5.35);
@@ -802,11 +642,20 @@ export function buildTractor(look: TruckLook, opts: { interior: boolean; lod?: b
   mergeStatic(chassis);
   const exterior: THREE.Object3D[] = [];
   cab.traverse((o) => { if (o instanceof THREE.Mesh && o.material === BORDER) exterior.push(o); });
+  const cabDetail: THREE.Object3D[] = [];
+  cab.traverse((o) => { if (o instanceof THREE.Mesh && isInteriorDetail(o.material)) cabDetail.push(o); });
   // The cab interior sits in the shell's shadow already, so it never casts one.
-  const inside = new Set<THREE.Material>(interior ? Object.values(interior) : []);
-  root.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = !o.userData.noShadow && !inside.has(o.material as THREE.Material); o.receiveShadow = true; } });
+  root.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = !o.userData.noShadow && !insideMat(o.material); o.receiveShadow = true; } });
   for (const g of glass) g.castShadow = false;
-  return { root, cab, steer, spin, steeringWheel, exhaustTip, glass, dashScreen, gpsScreen, lights, headlightAnchor, paintMat: shellMat, model: look.model, exterior, wipers };
+  return { root, cab, steer, spin, steeringWheel, exhaustTip, glass, dashScreen, gpsScreen, lights, headlightAnchor, paintMat: shellMat, model: look.model, exterior, wipers, cabDetail,
+    fit: {
+      pivot: new THREE.Vector3(0, 1.25, 3.9),
+      eye,
+      head: new THREE.Vector3(0.86, 1.55, 5.35),
+      mirror: new THREE.Vector3(1.66, (wsY0 + wsY1) / 2 + 0.07, 4.95),
+      mirrorSize: [0.18, 0.58],
+    },
+  };
 }
 
 // ------------------------------------------------------------------ trailers
@@ -1041,7 +890,10 @@ export function truckPaintFor(i: number) {
 
 /** A plausible look for an AI truck. */
 export function aiTruckLook(i: number): TruckLook {
-  return { model: i % 3, color: truckPaintFor(i), accent: [0xf2f2f2, 0x111214, 0xffb020][i % 3], chrome: i % 2 === 0, lightbar: i % 3 === 2 };
+  // Mostly long-noses, with a few European cab-overs.
+  const model = [3, 4, 0, 3, 1, 4, 3, 2][i % 8];
+  const conv = TRUCK_MODELS[model].style === 'conventional';
+  return { model, color: truckPaintFor(i), accent: [0xf2f2f2, 0x111214, 0xffb020][i % 3], chrome: i % 2 === 0 || model === 4, lightbar: !conv && i % 3 === 2 };
 }
 
 export { CONTAINER_COLORS };

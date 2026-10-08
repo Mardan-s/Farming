@@ -8,7 +8,25 @@ import { mulberry32 } from '../util';
 //
 // Local frame matches the tractor: +z forward, +x is the LEFT side, y up.
 
-export interface CabSpec { y0: number; H: number; zBack: number; model: number }
+export interface CabSpec { y0: number; H: number; zBack: number; model: number; profile?: CabProfile }
+
+/** Height profiles for a custom shell, as (absolute y, value) pairs. */
+export interface CabProfile {
+  winY0: number;
+  winY1: number;
+  zFront: [number, number][];
+  halfW: [number, number][];
+  zBack: [number, number][];
+  rFront: [number, number][];
+  rBack: number;
+  doorBack: number;
+  /** Wheel-arch cut-out, or none. */
+  arch: { z: number; y: number; r: number } | null;
+  /** How far the windscreen bows forward in the middle. */
+  bow: number;
+  /** Model name across the front (cab-overs only). */
+  lettering: boolean;
+}
 
 /** Monotone piecewise-smoothstep interpolation through (t, value) pairs. */
 function curve(pts: [number, number][]) {
@@ -40,20 +58,37 @@ export class CabShape {
   readonly perRing: number;
   /** Window band as fractions of cab height. */
   readonly win: { t0: number; t1: number };
+  readonly doorBack: number;
+  readonly arch: { z: number; y: number; r: number } | null;
+  readonly bow: number;
+  readonly lettering: boolean;
 
   constructor(readonly spec: CabSpec) {
     const m = spec.model;
     const nose = m === 2 ? 5.27 : 5.24;
     // Profiles are given at absolute heights and converted to fractions of the shell height.
     const roof = spec.y0 + spec.H, winY0 = 2.47 + m * 0.08, winY1 = roof - 0.4;
+    const pr: CabProfile = spec.profile ?? {
+      winY0, winY1,
+      zFront: [[spec.y0, nose - 0.16], [spec.y0 + 0.14, nose - 0.02], [1.4, nose], [2.34, nose - 0.03], [winY0, nose - 0.06], [winY1, nose - 0.24], [roof - 0.18, nose - 0.27], [roof - 0.05, nose - 0.36], [roof, nose - 0.48]],
+      halfW: [[spec.y0, 1.2], [spec.y0 + 0.13, 1.25], [roof - 0.26, 1.25], [roof - 0.08, 1.21], [roof, 1.1]],
+      zBack: [[spec.y0, spec.zBack + 0.03], [spec.y0 + 0.13, spec.zBack], [roof - 0.13, spec.zBack], [roof, spec.zBack + 0.09]],
+      rFront: [[spec.y0, 0.17], [2.34, 0.21], [winY0 + 0.13, 0.31], [winY1, 0.3], [roof, 0.22]],
+      rBack: 0.14, doorBack: DOOR_BACK, arch: { z: 3.9, y: 0.52, r: 0.7 }, bow: 0.05, lettering: true,
+    };
     const t = (y: number) => (y - spec.y0) / spec.H;
     const at = (pts: [number, number][]) => curve(pts.map(([y, v]) => [t(y), v] as [number, number]));
-    this.win = { t0: t(winY0), t1: t(winY1) };
-    this.zFront = at([[spec.y0, nose - 0.16], [spec.y0 + 0.14, nose - 0.02], [1.4, nose], [2.34, nose - 0.03], [winY0, nose - 0.06], [winY1, nose - 0.24], [roof - 0.18, nose - 0.27], [roof - 0.05, nose - 0.36], [roof, nose - 0.48]]);
-    this.halfW = at([[spec.y0, 1.2], [spec.y0 + 0.13, 1.25], [roof - 0.26, 1.25], [roof - 0.08, 1.21], [roof, 1.1]]);
-    this.zBackC = at([[spec.y0, spec.zBack + 0.03], [spec.y0 + 0.13, spec.zBack], [roof - 0.13, spec.zBack], [roof, spec.zBack + 0.09]]);
-    this.rFront = at([[spec.y0, 0.17], [2.34, 0.21], [winY0 + 0.13, 0.31], [winY1, 0.3], [roof, 0.22]]);
-    this.rBack = () => 0.14;
+    this.win = { t0: t(pr.winY0), t1: t(pr.winY1) };
+    this.zFront = at(pr.zFront);
+    this.halfW = at(pr.halfW);
+    this.zBackC = at(pr.zBack);
+    this.rFront = at(pr.rFront);
+    const rb = pr.rBack;
+    this.rBack = () => rb;
+    this.doorBack = pr.doorBack;
+    this.arch = pr.arch;
+    this.bow = pr.bow;
+    this.lettering = pr.lettering;
     this.perRing = 2 * (SEG.back + SEG.backCorner + SEG.side + SEG.frontCorner + SEG.front);
   }
 
@@ -91,7 +126,7 @@ export class CabShape {
   ring(t: number) {
     const hw = this.halfW(t), zf = this.zFront(t), zb = this.zBackC(t), rf = this.rFront(t), rb = this.rBack(t);
     // Windscreen height: the front face bows forward a little.
-    const bow = t > this.win.t0 - 0.05 && t < this.win.t1 + 0.04 ? 0.05 : 0.025;
+    const bow = t > this.win.t0 - 0.05 && t < this.win.t1 + 0.04 ? this.bow : this.bow / 2;
     const half: { x: number; z: number; seg: string }[] = [];
     for (let i = 0; i < SEG.back; i++) half.push({ x: ((hw - rb) * i) / SEG.back, z: zb, seg: 'back' });
     for (let i = 0; i < SEG.backCorner; i++) {
@@ -117,9 +152,10 @@ export class CabShape {
 
   /** Front wheel arch cut into the lower sides. */
   isArch(t: number, p: { x: number; z: number }) {
-    if (Math.abs(p.x) < 1.0) return false;
-    const dz = p.z - 3.9, dy = this.yAt(t) - 0.52;
-    return dz * dz + dy * dy < 0.7 * 0.7;
+    const a = this.arch;
+    if (!a || Math.abs(p.x) < 1.0) return false;
+    const dz = p.z - a.z, dy = this.yAt(t) - a.y;
+    return dz * dz + dy * dy < a.r * a.r;
   }
 
   /** Is this point of the surface inside a window opening? */
@@ -130,8 +166,9 @@ export class CabShape {
     if (p.seg === 'frontCorner') return Math.abs(p.x) < this.halfW(t) - this.rFront(t) * 0.35;
     // Side windows run from just behind the corner back to the door's rear edge, with a falling sill.
     if (p.seg === 'side') {
-      const sill = WIN.t0 + (p.z < DOOR_BACK + 0.35 ? 0.06 * (1 - (p.z - DOOR_BACK) / 0.35) : 0);
-      return p.z > DOOR_BACK + 0.02 && t >= sill;
+      const db = this.doorBack;
+      const sill = WIN.t0 + (p.z < db + 0.35 ? 0.06 * (1 - (p.z - db) / 0.35) : 0);
+      return p.z > db + 0.02 && t >= sill;
     }
     return false;
   }
@@ -146,7 +183,7 @@ export function buildCab(spec: CabSpec, lod: boolean): CabBuild {
   const ts: number[] = [];
   for (let i = 0; i <= rows; i++) ts.push(i / rows);
   // Extra rows exactly at the window edges keep the openings crisp.
-  for (const t of [WIN.t0, WIN.t1]) if (!ts.some((x) => Math.abs(x - t) < 1e-6)) ts.push(t);
+  for (const t of [WIN.t0, WIN.t1]) if (t > 0 && t < 1 && !ts.some((x) => Math.abs(x - t) < 1e-6)) ts.push(t);
   ts.sort((a, b) => a - b);
   const P = shape.perRing + 1;
   const rings = ts.map((t) => shape.ring(t));
@@ -271,24 +308,25 @@ export function panelTextures(shape: CabShape, name: string) {
   }
   // Door shut-lines on both sides, a handle recess and the step cover below.
   for (const side of [1, -1]) {
-    const back = uOf((p) => p.side === side && p.seg === 'side' && Math.abs(p.z - DOOR_BACK) < 0.07);
+    const back = uOf((p) => p.side === side && p.seg === 'side' && Math.abs(p.z - shape.doorBack) < 0.07);
     const front = uOf((p) => p.side === side && p.seg === 'frontCorner');
     if (!back.length || !front.length) continue;
     const ub = back[0], uf = side > 0 ? front[0] + 14 : front[front.length - 1] - 14;
+    const doorBottom = shape.lettering ? 1.32 : shape.spec.y0 + 0.07, handleY = shape.yAt(WIN.t0) - 0.15;
     for (const ctx of [g, hg]) {
       ctx.strokeStyle = ctx === g ? 'rgba(10,10,12,0.85)' : '#202020';
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.moveTo(ub, Y(WIN.t0 + 0.02)); ctx.lineTo(ub, Y(T(1.32))); ctx.lineTo(uf, Y(T(1.32))); ctx.lineTo(uf, Y(WIN.t0));
+      ctx.moveTo(ub, Y(WIN.t0 + 0.02)); ctx.lineTo(ub, Y(T(doorBottom))); ctx.lineTo(uf, Y(T(doorBottom))); ctx.lineTo(uf, Y(WIN.t0));
       ctx.stroke();
       // Handle recess.
       const hu = ub + (uf - ub) * 0.12;
       ctx.fillStyle = ctx === g ? 'rgba(20,20,24,0.9)' : '#303030';
-      ctx.fillRect(hu - 28, Y(T(2.32)) - 9, 56, 18);
+      ctx.fillRect(hu - 28, Y(T(handleY)) - 9, 56, 18);
     }
   }
   // Front lettering across the grille top, in brushed metal.
-  const fu = uOf((p) => p.side === 0)[0];
+  const fu = shape.lettering ? uOf((p) => p.side === 0)[0] : -1e4;
   g.font = '800 64px "Barlow Condensed", Impact, sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';

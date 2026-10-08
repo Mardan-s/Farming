@@ -22,6 +22,8 @@ export interface Save {
   color: number;
   model?: number;
   owned?: number[];
+  /** Written by builds that have the long-nose trucks. */
+  v2?: boolean;
   upgrades?: UpgradeId[];
   accent?: number;
   fuel: number;
@@ -69,8 +71,8 @@ export class Game {
   km = 0;
   color = 0xb3141b;
   accent = 0xf2f2f2;
-  model = 0;
-  owned: number[] = [0];
+  model = 3;
+  owned: number[] = [3];
   upgrades = new Set<UpgradeId>();
   job: Job | null = null;
   jobTime = 0;
@@ -106,7 +108,7 @@ export class Game {
     this.world = world;
     this.colliders = yardColliders(world);
     this.load();
-    this.truck.torqueScale = torqueScale(this.model, this.upgrades);
+    this.applyModel();
     this.placeAtDepot(this.depotId);
     this.traffic = new Traffic(world.road, trafficCount, 5, world.depots[this.depotId].s);
     this.offers = this.makeOffers();
@@ -125,8 +127,10 @@ export class Game {
       this.km = s.km ?? 0;
       this.depotId = clamp(s.depot ?? 0, 0, this.world.depots.length - 1);
       this.color = s.color ?? this.color;
-      this.model = s.model ?? 0;
-      this.owned = s.owned ?? [0];
+      this.model = s.model ?? 3;
+      this.owned = s.owned ?? [3];
+      // Saves from before the long-nose trucks: hand over the free one and put the driver in it.
+      if (!s.v2) { if (!this.owned.includes(3)) this.owned.push(3); this.model = 3; }
       this.upgrades = new Set(s.upgrades ?? []);
       this.accent = s.accent ?? this.accent;
       this.truck.fuel = s.fuel ?? this.truck.fuel;
@@ -135,7 +139,7 @@ export class Game {
   }
 
   save() {
-    const s: Save = { money: this.money, xp: this.xp, deliveries: this.deliveries, km: this.km, depot: this.depotId, color: this.color, fuel: this.truck.fuel, damage: this.truck.damage, model: this.model, owned: this.owned, upgrades: [...this.upgrades], accent: this.accent };
+    const s: Save = { money: this.money, xp: this.xp, deliveries: this.deliveries, km: this.km, depot: this.depotId, color: this.color, fuel: this.truck.fuel, damage: this.truck.damage, model: this.model, owned: this.owned, upgrades: [...this.upgrades], accent: this.accent, v2: true };
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(s)); } catch { /* storage unavailable */ }
   }
 
@@ -144,7 +148,16 @@ export class Game {
   // ---------------------------------------------------------------- garage
 
   get look(): TruckLook {
-    return { model: this.model, color: this.color, accent: this.accent, chrome: this.upgrades.has('chrome') || this.model === 2, lightbar: this.upgrades.has('lightbar') || this.model === 2 };
+    const dressed = !!TRUCK_MODELS[this.model].dressed;
+    return { model: this.model, color: this.color, accent: this.accent, chrome: this.upgrades.has('chrome') || dressed, lightbar: this.upgrades.has('lightbar') || (dressed && TRUCK_MODELS[this.model].style === 'cabover') };
+  }
+
+  /** Copies the model's dimensions and engine onto the truck. */
+  private applyModel() {
+    const m = TRUCK_MODELS[this.model] ?? TRUCK_MODELS[3];
+    this.truck.wheelbase = m.wheelbase;
+    this.truck.front = m.front;
+    this.truck.torqueScale = torqueScale(this.model, this.upgrades);
   }
 
   /** Buys (if needed) and switches to a truck model. Returns false when it can't be afforded. */
@@ -157,7 +170,7 @@ export class Game {
       this.ev.toast(`Bought the ${m.name}!`, 'good');
     }
     this.model = id;
-    this.truck.torqueScale = torqueScale(this.model, this.upgrades);
+    this.applyModel();
     this.save();
     return true;
   }
@@ -403,7 +416,7 @@ export class Game {
   /** The rig's footprint in road coordinates, for the AI to avoid. */
   rigObstacles() {
     const t = this.truck;
-    const pts = [t.tractorPoint(5.3, 0), t.tractorPoint(2, 0), t.tractorPoint(-1.2, 0)];
+    const pts = [t.tractorPoint(t.front, 0), t.tractorPoint(t.front / 2 - 0.6, 0), t.tractorPoint(-1.2, 0)];
     if (t.hasTrailer) pts.push(t.trailerPoint(10, 0), t.trailerPoint(5, 0), t.trailerPoint(-1.6, 0));
     const out: { s: number; lat: number }[] = [];
     for (const p of pts) {
@@ -415,8 +428,8 @@ export class Game {
 
   rigBoxes(): Box2[] {
     const t = this.truck;
-    const c = t.tractorPoint(2.0, 0);
-    const out: Box2[] = [{ x: c.x, z: c.z, heading: t.heading, hl: 3.35, hw: 1.27 }];
+    const c = t.tractorPoint((t.front - 1.4) / 2, 0);
+    const out: Box2[] = [{ x: c.x, z: c.z, heading: t.heading, hl: (t.front + 1.4) / 2, hw: 1.27 }];
     if (t.hasTrailer) { const k = t.trailerPoint(5.2, 0); out.push({ x: k.x, z: k.z, heading: t.trailerHeading, hl: 6.85, hw: 1.3 }); }
     return out;
   }
@@ -427,7 +440,7 @@ export class Game {
     const road = this.world.road;
     const checks: { along: number; side: number; trailer: boolean }[] = [];
     for (const side of [-1.25, 1.25]) {
-      checks.push({ along: 5.3, side, trailer: false }, { along: -1.3, side, trailer: false });
+      checks.push({ along: t.front, side, trailer: false }, { along: t.front / 2, side, trailer: false }, { along: -1.3, side, trailer: false });
       if (t.hasTrailer) checks.push({ along: 12.0, side, trailer: true }, { along: 5, side, trailer: true }, { along: -1.6, side, trailer: true });
     }
     const tp = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
@@ -503,11 +516,11 @@ export class Game {
     const p = { x: 0, y: 0, z: 0 };
     const heading = (s: number) => { road.sample(s, tp); return Math.atan2(tp.tx, tp.tz) + (c.dir < 0 ? Math.PI : 0); };
     if (c.kind === 'truck') {
-      const s1 = c.s + c.dir * 5.3, s2 = c.s - c.dir * 2.6;
+      const s1 = c.s + c.dir * 5.8, s2 = c.s - c.dir * 2.6;
       road.toWorld(s1, c.lat, p);
-      const a: Box2 = { x: p.x, z: p.z, heading: heading(s1), hl: 3.3, hw: 1.25 };
+      const a: Box2 = { x: p.x, z: p.z, heading: heading(s1), hl: 3.65, hw: 1.25 };
       road.toWorld(s2, c.lat, p);
-      return [a, { x: p.x, z: p.z, heading: heading(s2), hl: 6.8, hw: 1.28 }];
+      return [a, { x: p.x, z: p.z, heading: heading(s2), hl: 7.0, hw: 1.28 }];
     }
     road.toWorld(c.s, c.lat, p);
     return [{ x: p.x, z: p.z, heading: heading(c.s), hl: c.len / 2, hw: c.wid / 2 }];

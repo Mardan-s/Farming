@@ -12,7 +12,7 @@ export const CAR_DIMS: Record<CarKind, { len: number; wid: number }> = {
   wagon: { len: 4.85, wid: 1.85 },
   suv: { len: 4.7, wid: 1.95 },
   van: { len: 5.4, wid: 2.0 },
-  truck: { len: 16.6, wid: 2.55 },
+  truck: { len: 18.0, wid: 2.55 },
 };
 
 export interface Car {

@@ -80,7 +80,7 @@ export class CameraRig {
       cam.up.set(0, 1, 0);
       cam.lookAt(this.look);
       cam.rotateZ(-root.rotation.z * 0.6);
-      cam.fov = damp(cam.fov, 74, 4, dt);
+      cam.fov = damp(cam.fov, 64, 4, dt);
       cam.near = 0.05;
     } else if (this.mode === 'showcase') {
       // Slow orbit around the truck for the title screen.
