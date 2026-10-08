@@ -3,6 +3,7 @@ import type { Delivery, Job } from '../sim/jobs';
 import type { Depot } from '../sim/world';
 import { FUEL_CAP } from '../sim/truck';
 import { formatMoney } from '../util';
+import { versionLabel } from '../version';
 import { ACCENTS, GARAGE_ORDER, TRUCK_MODELS, UPGRADES, UpgradeId } from '../sim/trucks';
 import type { Tier } from '../render/quality';
 import { ICON, WHEEL_SVG } from './icons';
@@ -295,6 +296,7 @@ export class Hud {
         <button class="btn ghost small" data-x="settings">Settings</button>
       </div>
       <div class="stats"><div><b>${formatMoney(g.money)}</b>Bank</div><div><b>${g.level.level}</b>Level</div><div><b>${g.deliveries}</b>Deliveries</div><div><b>${Math.round(g.km)}</b>km driven</div></div>
+      <div class="ver">${versionLabel()}</div>
     </div></div>`);
     el.querySelector('[data-x="go"]')!.addEventListener('click', () => { this.close(); this.act.start(); });
     el.querySelector('[data-x="fs"]')!.addEventListener('click', () => this.act.fullscreen());

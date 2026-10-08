@@ -23,6 +23,7 @@ import { Hud } from './ui/hud';
 import { Input, SteerMode } from './ui/input';
 import { Audio, TrafficSound } from './audio';
 import { clamp, lerp, smoothstep } from './util';
+import { newerBuild } from './version';
 
 // Sun glints on near-mirror surfaces can exceed the half-float range and turn into infinities that
 // bloom then smears over the whole screen. Clamp every material's output to a sane HDR maximum.
@@ -328,6 +329,17 @@ async function boot() {
     }
   });
   rig.gpsSource = document.querySelector<HTMLCanvasElement>('.gps canvas');
+  // Phones keep stale copies of the page: load a newer build if one is online, straight away on
+  // the title screen, or say so mid-drive (the game is saved either way).
+  const checkUpdate = async () => {
+    const url = await newerBuild();
+    if (!url) return;
+    game.save();
+    if (!started) location.replace(url);
+    else hud!.toast('A new version is out · reopen the game to get it', 'good');
+  };
+  void checkUpdate();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void checkUpdate(); });
   const up = (e: PointerEvent) => { ptrs.delete(e.pointerId); pinch = 0; };
   canvas.addEventListener('pointerup', up);
   canvas.addEventListener('pointercancel', up);
