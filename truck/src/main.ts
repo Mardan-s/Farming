@@ -443,6 +443,7 @@ async function boot() {
     }
 
     audio.radio?.setPlace(cam.mode === 'cab', settings.volume);
+    hud?.setCabView(cam.mode === 'cab');
     audio.update(dt, { rpm: t.rpm, load: t.load, speed: t.speed, rain: game.rain, horn: game.horn, braking: t.braking, indicator: (game.indL || game.indR || game.hazard) && started, interior: cam.mode === 'cab', reverse: t.drive === 'R' && started, night });
     // Traffic and honks are heard from the camera: panned left/right of where it looks.
     cam.camera.getWorldDirection(camFwd);

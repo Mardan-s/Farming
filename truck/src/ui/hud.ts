@@ -67,6 +67,11 @@ export class Hud {
   private mapT = 0;
   paused = false;
 
+  /** In the cab view the dashboard shows speed and gear, so the HUD gets out of its way. */
+  setCabView(on: boolean) {
+    if (this.hud.classList.contains('cabview') !== on) this.hud.classList.toggle('cabview', on);
+  }
+
   constructor(private game: Game, input: Input, private act: HudActions, private settings: HudSettings) {
     this.root = document.getElementById('ui')!;
     this.hud = h(`<div class="hud hidden">

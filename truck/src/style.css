@@ -220,3 +220,9 @@ input[type=range] { width: 160px; accent-color: var(--accent); }
 .camflash { position: absolute; inset: 0; background: #fff; pointer-events: none; animation: camflash 0.6s ease-out forwards; }
 @keyframes camflash { from { opacity: 0.85; } to { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .camflash { animation-duration: 0.2s; } }
+
+/* Cab view: the truck's own gauges show speed and gear, so keep the middle of the screen clear. */
+.hud.cabview .cluster { left: auto; right: calc(14px + var(--safe-r)); top: calc(64px + var(--safe-t)); bottom: auto; transform: none; padding: 0; background: none; border: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.hud.cabview .cluster > :not(.limit) { display: none; }
+.hud.cabview .actions { bottom: calc(10px + var(--safe-b)); }
+.hud.cabview .rail { width: 200px; flex-wrap: wrap; justify-content: flex-end; }
