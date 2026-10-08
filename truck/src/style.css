@@ -226,3 +226,5 @@ input[type=range] { width: 160px; accent-color: var(--accent); }
 .hud.cabview .cluster > :not(.limit) { display: none; }
 .hud.cabview .actions { bottom: calc(10px + var(--safe-b)); }
 .hud.cabview .rail { width: 200px; flex-wrap: wrap; justify-content: flex-end; }
+
+.title .ver { margin-top: 10px; font-size: 11px; letter-spacing: 0.08em; color: var(--muted); opacity: 0.7; }
