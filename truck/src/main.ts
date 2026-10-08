@@ -217,7 +217,7 @@ async function boot() {
       hud!.showHud(true);
       if (!game.job && game.atDepot) setTimeout(() => hud!.showJobs(), 600);
     },
-    cam: () => { cam.next(); rig.setInterior(cam.mode === 'cab'); hud!.toast(({ chase: 'Chase camera', cab: 'Cab view', cinematic: 'Cinematic camera', wheel: 'Wheel camera', showcase: 'Showcase' } as const)[cam.mode]); },
+    cam: () => { cam.next(); rig.setInterior(cam.mode === 'cab'); hud!.toast(({ chase: 'Chase camera', cab: 'Cab view', cinematic: 'Cinematic camera', wheel: 'Wheel camera', showcase: 'Showcase', free: 'Free camera' } as const)[cam.mode]); },
     lights: () => {
       game.headMode = lightsCycle[(lightsCycle.indexOf(game.headMode) + 1) % lightsCycle.length];
       hud!.toast(({ auto: 'Headlights: auto', on: 'Headlights on', high: 'High beam', off: 'Headlights off' } as const)[game.headMode]);
@@ -328,6 +328,7 @@ async function boot() {
       pinch = d;
     }
   });
+  rig.gpsSource = document.querySelector<HTMLCanvasElement>('.gps canvas');
   const up = (e: PointerEvent) => { ptrs.delete(e.pointerId); pinch = 0; };
   canvas.addEventListener('pointerup', up);
   canvas.addEventListener('pointercancel', up);

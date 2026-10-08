@@ -6,6 +6,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 
 let clearcoat = true;
 export function setClearcoat(on: boolean) { clearcoat = on; }
+export function clearcoatOn() { return clearcoat; }
 
 const paints = new Map<string, THREE.MeshStandardMaterial>();
 

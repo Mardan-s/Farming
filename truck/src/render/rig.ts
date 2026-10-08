@@ -5,7 +5,7 @@ import type { World } from '../sim/world';
 import { clamp, damp } from '../util';
 import { MAT } from './materials';
 import type { TruckLook } from '../sim/trucks';
-import { LightState, Trailer, Tractor, applyLights, buildTrailer, buildTractor } from './vehicles';
+import { LightState, Trailer, Tractor, applyLights, buildTrailer, buildTractor, setCabAmbient } from './vehicles';
 import type { Particles } from './fx';
 
 // The player's rig on screen: places the tractor and trailer on the ground, animates the cab
@@ -41,6 +41,11 @@ export class RigView {
   private dashTex: THREE.CanvasTexture;
   private dashT = 0;
   private interiorView = false;
+  /** Canvas mirrored onto the dashboard sat-nav (the HUD minimap). */
+  gpsSource: HTMLCanvasElement | null = null;
+  private gpsTex: THREE.CanvasTexture | null = null;
+  private gpsT = 0;
+  private wipePh = 0;
   /** Cab-local eye position for the driver's view. */
   readonly eye = new THREE.Object3D();
   private v = new THREE.Vector3();
@@ -71,7 +76,7 @@ export class RigView {
     this.cabPivot.position.set(0, 1.25, 3.9);
     this.cabPivot.add(cab);
     cab.position.set(0, -1.25, -3.9);
-    this.eye.position.set(0.62, 2.98, 4.05);
+    this.eye.position.set(0.62, 2.98, 3.98);
     cab.add(this.eye);
     this.scene.add(this.tractor.root);
     this.heads = [];
@@ -92,6 +97,7 @@ export class RigView {
       this.beams.push(beam);
     }
     if (this.tractor.dashScreen) (this.tractor.dashScreen.material as THREE.MeshBasicMaterial).map = this.dashTex;
+    this.gpsTex = null;
     // Live rear-view mirrors: a small camera at each main mirror renders into the glass.
     this.mirrors = [];
     if (this.mirrorRes) {
@@ -232,6 +238,29 @@ export class RigView {
     }
     this.dashT -= dt;
     if (this.dashT <= 0 && this.interiorView) { this.dashT = 0.1; this.drawDash(t); }
+    if (this.interiorView) setCabAmbient(0.04 + (1 - night) * 0.3);
+    // Sat-nav: shows the same map as the HUD.
+    this.gpsT -= dt;
+    const gps = this.tractor.gpsScreen;
+    if (gps && this.gpsSource && this.interiorView && this.gpsT <= 0 && this.gpsSource.width > 0) {
+      this.gpsT = 0.2;
+      if (!this.gpsTex || this.gpsTex.image !== this.gpsSource) {
+        this.gpsTex = new THREE.CanvasTexture(this.gpsSource);
+        this.gpsTex.colorSpace = THREE.SRGBColorSpace;
+        const m = gps.material as THREE.MeshBasicMaterial;
+        m.map = this.gpsTex;
+        m.color.setScalar(0.85);
+        m.needsUpdate = true;
+      }
+      this.gpsTex.needsUpdate = true;
+    }
+    // Wipers sweep while it rains (faster in a downpour) and park when it stops.
+    const wipers = this.tractor.wipers;
+    if (wipers.length) {
+      if (fog > 0.15 || this.wipePh % 1 > 0.02) this.wipePh += dt * (fog > 0.6 ? 1.3 : 0.8);
+      const a = Math.sin((this.wipePh % 1) * Math.PI) * 1.45;
+      for (const wp of wipers) wp.rotation.z = Math.PI / 2 - 0.08 - a;
+    }
   }
 
   private drawDash(t: Truck) {

@@ -51,6 +51,17 @@ function periodicNoise(w: number, h: number, period: number, seed: number, octav
   return out;
 }
 
+/** Normal map from a canvas's luminance (grey = flat). */
+export function normalFromCanvas(c: HTMLCanvasElement, strength: number) {
+  const g = c.getContext('2d')!;
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  const h = new Float32Array(c.width * c.height);
+  for (let i = 0; i < h.length; i++) h[i] = d[i * 4] / 255;
+  const t = normalFromHeight(h, c.width, c.height, strength);
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
 /** Normal map from a height field (tileable). */
 function normalFromHeight(hgt: Float32Array, w: number, h: number, strength: number) {
   const [c, g] = canvas(w, h);
